@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import type { FormEvent } from 'react';
-import { Camera, StopCircle, Play, Mic, Info } from 'lucide-react';
+import { Camera, StopCircle, Play, Mic, MicOff, Info } from 'lucide-react';
+import { callTool } from '../services/mcpClient';
+import { speakText, stopSpeaking, startListening, stopListening, isSpeechRecognitionSupported } from '../services/speechService';
 
 interface TranscriptItem {
   id: string;
@@ -12,54 +14,38 @@ interface TranscriptItem {
 export function SurroundingsMode() {
   const [isWatching, setIsWatching] = useState<boolean>(false);
   const [isCameraActive, setIsCameraActive] = useState<boolean>(false);
+  const [isVoiceActive, setIsVoiceActive] = useState<boolean>(false);
+  const [isAnalyzingFrame, setIsAnalyzingFrame] = useState<boolean>(false);
   const [cadenceSeconds] = useState<number>(5);
   const [followupText, setFollowupText] = useState<string>('');
   const [transcripts, setTranscripts] = useState<TranscriptItem[]>([]);
+
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
+  const intervalRef = useRef<any>(null);
+  const prevFrameRef = useRef<string | null>(null);
+  const priorContextRef = useRef<string>('');
+  const isWatchingRef = useRef<boolean>(false);
+
+  // Keep ref in sync for interval callbacks
+  useEffect(() => {
+    isWatchingRef.current = isWatching;
+  }, [isWatching]);
 
   // Scroll transcript to bottom as updates arrive
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [transcripts]);
 
-  // Handle start/stop camera stream
-  const toggleWatching = async () => {
-    if (isWatching) {
-      // Stop watching
-      setIsWatching(false);
-      setIsCameraActive(false);
-      if (videoRef.current && videoRef.current.srcObject) {
-        const stream = videoRef.current.srcObject as MediaStream;
-        stream.getTracks().forEach((track) => track.stop());
-        videoRef.current.srcObject = null;
-      }
-      addTranscript('Watching stopped. Camera capture disconnected.', 'system');
-    } else {
-      // Start watching
-      setIsWatching(true);
-      addTranscript('Watching started. Monitoring environment at ~5s cadence.', 'system');
-      
-      // Request real camera if available
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment' },
-          audio: false,
-        });
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          setIsCameraActive(true);
-        }
-      } catch (err) {
-        // Camera denied or unavailable in this context
-        setIsCameraActive(false);
-        addTranscript(
-          'Camera access not granted or unavailable. Running in camera simulation mode.',
-          'system'
-        );
-      }
-    }
-  };
+  // Clean up on unmount
+  useEffect(() => {
+    return () => {
+      stopWatchingInternal();
+      stopListening();
+      stopSpeaking();
+    };
+  }, []);
 
   const addTranscript = (text: string, type: 'observation' | 'followup' | 'system') => {
     const newItem: TranscriptItem = {
@@ -71,16 +57,230 @@ export function SurroundingsMode() {
     setTranscripts((prev) => [...prev, newItem]);
   };
 
-  const handleFollowupSubmit = (e: FormEvent) => {
+  /**
+   * Capture a single frame from the live video feed as base64 JPEG.
+   */
+  const captureFrameBase64 = (): string | null => {
+    if (!videoRef.current || !canvasRef.current) return null;
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+
+    if (video.videoWidth === 0 || video.videoHeight === 0) return null;
+
+    canvas.width = Math.min(640, video.videoWidth);
+    canvas.height = Math.min(480, video.videoHeight);
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+    return dataUrl.split(',')[1] || null;
+  };
+
+  /**
+   * The 5-second cadence cycle: captures frame and calls describe_surroundings MCP tool.
+   */
+  const processCadenceCycle = async () => {
+    if (!isWatchingRef.current) return;
+
+    const currentFrameBase64 = captureFrameBase64();
+    if (!currentFrameBase64) {
+      console.log('[Surroundings] Video frame not ready yet, skipping cycle.');
+      return;
+    }
+
+    try {
+      setIsAnalyzingFrame(true);
+      const result = await callTool('describe_surroundings', {
+        image_base64: currentFrameBase64,
+        mime_type: 'image/jpeg',
+        prior_context: priorContextRef.current,
+        prev_frame_base64: prevFrameRef.current,
+      });
+
+      if (result.isUnchanged) {
+        console.log('[Surroundings] Scene is static; frame difference below threshold.');
+      } else {
+        priorContextRef.current = result.spokenText;
+        addTranscript(result.spokenText, 'observation');
+        // Speak aloud per voice-first accessibility mandate
+        speakText(result.spokenText);
+      }
+
+      prevFrameRef.current = currentFrameBase64;
+    } catch (err: any) {
+      console.warn('[Surroundings] Cycle processing error:', err.message);
+    } finally {
+      setIsAnalyzingFrame(false);
+    }
+  };
+
+  /**
+   * Start Surroundings Mode.
+   */
+  const startWatching = async () => {
+    setIsWatching(true);
+    addTranscript('Starting Surroundings Mode. Initializing camera and voice stream...', 'system');
+    speakText('Starting Surroundings Mode. Point your camera forward.');
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } },
+        audio: false,
+      });
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+        setIsCameraActive(true);
+      }
+
+      addTranscript('Camera active. Analyzing surroundings every 5 seconds.', 'system');
+
+      // Run initial check after 1.5 seconds, then every 5 seconds
+      setTimeout(processCadenceCycle, 1500);
+      intervalRef.current = setInterval(processCadenceCycle, cadenceSeconds * 1000);
+    } catch (err: any) {
+      console.warn('[Surroundings] Camera error:', err);
+      setIsCameraActive(false);
+      addTranscript(
+        'Camera permission was not granted or camera is busy. Please allow camera access in your browser.',
+        'system'
+      );
+      speakText('Camera permission not granted. Please allow camera access.');
+      setIsWatching(false);
+    }
+  };
+
+  /**
+   * Stop Surroundings Mode cleanly.
+   */
+  const stopWatchingInternal = () => {
+    setIsWatching(false);
+    setIsCameraActive(false);
+    setIsAnalyzingFrame(false);
+
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+
+    if (videoRef.current && videoRef.current.srcObject) {
+      const stream = videoRef.current.srcObject as MediaStream;
+      stream.getTracks().forEach((track) => track.stop());
+      videoRef.current.srcObject = null;
+    }
+
+    prevFrameRef.current = null;
+    stopSpeaking();
+  };
+
+  const stopWatching = () => {
+    stopWatchingInternal();
+    addTranscript('Surroundings Mode stopped. Camera disconnected.', 'system');
+    speakText('Watching stopped.');
+  };
+
+  const toggleWatching = () => {
+    if (isWatching) {
+      stopWatching();
+    } else {
+      startWatching();
+    }
+  };
+
+  /**
+   * Handle Voice Recognition Commands.
+   */
+  const handleVoiceCommand = async (command: string) => {
+    const lower = command.toLowerCase();
+    addTranscript(`Heard voice command: "${command}"`, 'followup');
+
+    // Check for control triggers
+    if (lower.includes('stop') || lower.includes("that's enough") || lower.includes('pause')) {
+      stopWatching();
+      return;
+    }
+
+    if (lower.includes('start surroundings') || lower.includes('describe surroundings') || lower.includes('start watching')) {
+      if (!isWatching) {
+        startWatching();
+      }
+      return;
+    }
+
+    // Otherwise, treat as an interrupting follow-up question
+    stopSpeaking();
+    addTranscript(`Asking: "${command}"...`, 'system');
+
+    try {
+      const currentFrame = captureFrameBase64();
+      const result = await callTool('ask_followup', {
+        question: command,
+        prior_context: priorContextRef.current,
+        image_base64: currentFrame || undefined,
+        mime_type: currentFrame ? 'image/jpeg' : undefined,
+      });
+
+      addTranscript(result.spokenText, 'observation');
+      speakText(result.spokenText);
+    } catch (err: any) {
+      addTranscript(`Could not resolve question: ${err.message}`, 'system');
+      speakText('Sorry, I had trouble answering that.');
+    }
+  };
+
+  const toggleVoiceControl = () => {
+    if (isVoiceActive) {
+      stopListening(setIsVoiceActive);
+      speakText('Voice control paused.');
+    } else {
+      const started = startListening(
+        (transcript) => handleVoiceCommand(transcript),
+        setIsVoiceActive,
+        (err) => addTranscript(err, 'system')
+      );
+      if (started) {
+        speakText('Voice control active. You can speak commands or questions.');
+      }
+    }
+  };
+
+  /**
+   * Handle text follow-up submit.
+   */
+  const handleFollowupSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!followupText.trim()) return;
-    
-    addTranscript(`You asked: "${followupText}"`, 'followup');
+
+    const question = followupText.trim();
     setFollowupText('');
+    addTranscript(`You asked: "${question}"`, 'followup');
+    stopSpeaking();
+
+    try {
+      const currentFrame = captureFrameBase64();
+      const result = await callTool('ask_followup', {
+        question,
+        prior_context: priorContextRef.current,
+        image_base64: currentFrame || undefined,
+        mime_type: currentFrame ? 'image/jpeg' : undefined,
+      });
+
+      addTranscript(result.spokenText, 'observation');
+      speakText(result.spokenText);
+    } catch (err: any) {
+      addTranscript(`Could not resolve question: ${err.message}`, 'system');
+      speakText('Sorry, I had trouble answering that.');
+    }
   };
 
   return (
     <div className="space-y-6">
+      {/* Hidden Canvas for Frame Capture */}
+      <canvas ref={canvasRef} className="hidden" aria-hidden="true" />
+
       {/* Top Banner & Status Panel */}
       <section aria-labelledby="surroundings-heading" className="card space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border-neutral)] pb-4">
@@ -93,7 +293,7 @@ export function SurroundingsMode() {
             </p>
           </div>
 
-          {/* Calm, steady status badge - strictly rectangular, zero pills, zero neon */}
+          {/* Status Badge - Rectangular, calm, zero neon */}
           <div
             className={`flex items-center gap-2 border px-3 py-1.5 text-xs font-semibold uppercase tracking-wider rounded-[var(--radius-sm)] ${
               isWatching
@@ -109,43 +309,42 @@ export function SurroundingsMode() {
               }`}
               aria-hidden="true"
             />
-            <span>{isWatching ? 'Watching' : 'Ready'}</span>
+            <span>{isWatching ? (isAnalyzingFrame ? 'Analyzing' : 'Watching') : 'Ready'}</span>
           </div>
         </div>
 
         {/* Camera Viewfinder Area */}
         <div className="relative aspect-video w-full overflow-hidden rounded-[var(--radius-md)] border border-[var(--border-neutral)] bg-[var(--bg-subtle)] flex items-center justify-center">
-          {isCameraActive ? (
-            <video
-              ref={videoRef}
-              autoPlay
-              playsInline
-              muted
-              className="h-full w-full object-cover"
-              aria-label="Live camera viewfinder"
-            />
-          ) : (
+          <video
+            ref={videoRef}
+            playsInline
+            muted
+            className={`h-full w-full object-cover ${isCameraActive ? 'block' : 'hidden'}`}
+            aria-label="Live camera viewfinder"
+          />
+
+          {!isCameraActive && (
             <div className="text-center p-6 space-y-2">
               <Camera className="mx-auto h-10 w-10 text-[var(--text-secondary)]" aria-hidden="true" />
               <p className="text-sm font-medium text-[var(--text-primary)]">
-                {isWatching ? 'Camera Active (Simulation View)' : 'Camera Inactive'}
+                Camera Inactive
               </p>
               <p className="text-xs text-[var(--text-secondary)] max-w-sm">
-                {isWatching
-                  ? 'Frames are captured in-memory and analyzed every 5 seconds. No frames are stored.'
-                  : 'Press Start Surroundings Mode to begin continuous visual narration.'}
+                Press Start Surroundings Mode below to initiate real-time camera description.
               </p>
             </div>
           )}
 
-          {/* Overlay Status Line - Calm, solid, zero glassmorphism */}
+          {/* Overlay Status Line */}
           {isWatching && (
             <div className="absolute bottom-3 left-3 right-3 rounded-[var(--radius-sm)] border border-[var(--border-neutral)] bg-[var(--bg-surface)] p-2.5 shadow-sm text-xs text-[var(--text-primary)] flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span className="h-2 w-2 rounded-[2px] bg-[var(--accent-primary)]" aria-hidden="true" />
-                <span className="font-medium">Cadence: 1 frame every {cadenceSeconds}s</span>
+                <span className="font-medium">Cadence: ~{cadenceSeconds}s Loop</span>
               </div>
-              <span className="text-[var(--text-secondary)]">Rate: ~12 calls/min (Safe Free Tier)</span>
+              <span className="text-[var(--text-secondary)]">
+                {isAnalyzingFrame ? 'Reasoning...' : 'Connected to MCP Server'}
+              </span>
             </div>
           )}
         </div>
@@ -175,21 +374,35 @@ export function SurroundingsMode() {
             )}
           </button>
 
-          <button
-            onClick={() => {
-              addTranscript('Interrupted with question: "Is the pathway clear ahead?"', 'followup');
-            }}
-            disabled={!isWatching}
-            className="btn-secondary flex-1 sm:flex-none"
-            aria-label="Ask a spoken question while watching"
-          >
-            <Mic className="h-4 w-4" aria-hidden="true" />
-            <span>Ask Spoken Question</span>
-          </button>
+          {/* Hands-Free Voice Control Button */}
+          {isSpeechRecognitionSupported() && (
+            <button
+              onClick={toggleVoiceControl}
+              className={`btn-secondary flex-1 sm:flex-none ${
+                isVoiceActive
+                  ? 'border-[var(--status-listening-border)] bg-[var(--status-listening-bg)] text-[var(--status-listening-text)] font-semibold'
+                  : ''
+              }`}
+              aria-pressed={isVoiceActive}
+              aria-label={isVoiceActive ? 'Disable hands-free voice control' : 'Enable hands-free voice control'}
+            >
+              {isVoiceActive ? (
+                <>
+                  <Mic className="h-4 w-4" aria-hidden="true" />
+                  <span>Voice Control: Active</span>
+                </>
+              ) : (
+                <>
+                  <MicOff className="h-4 w-4" aria-hidden="true" />
+                  <span>Enable Voice Commands</span>
+                </>
+              )}
+            </button>
+          )}
         </div>
       </section>
 
-      {/* Live Transcript Log (Conversation Style) */}
+      {/* Live Description Transcript */}
       <section aria-labelledby="transcript-heading" className="card space-y-3">
         <div className="flex items-center justify-between border-b border-[var(--border-neutral)] pb-3">
           <h3 id="transcript-heading" className="text-base font-semibold text-[var(--text-primary)]">
@@ -208,7 +421,7 @@ export function SurroundingsMode() {
               No surroundings described yet
             </p>
             <p className="text-xs text-[var(--text-secondary)] max-w-sm mx-auto">
-              Start Surroundings Mode above. As the camera views your space, spoken descriptions will appear here in chronological order.
+              Press Start Surroundings Mode above. As the camera views your space, spoken descriptions will stream here in real-time.
             </p>
           </div>
         ) : (
@@ -232,7 +445,7 @@ export function SurroundingsMode() {
                 <div className="flex items-center justify-between text-xs text-[var(--text-secondary)] mb-1">
                   <span className="font-semibold uppercase tracking-wider">
                     {item.type === 'observation'
-                      ? 'EchoSight'
+                      ? 'EchoSight Spoken'
                       : item.type === 'followup'
                       ? 'User Query'
                       : 'System Notice'}
@@ -246,7 +459,7 @@ export function SurroundingsMode() {
           </div>
         )}
 
-        {/* Mid-Session Follow-Up Input */}
+        {/* Follow-up question form */}
         <form onSubmit={handleFollowupSubmit} className="pt-2 flex gap-2">
           <label htmlFor="followup-input" className="sr-only">
             Ask follow-up question about current view
@@ -256,7 +469,7 @@ export function SurroundingsMode() {
             type="text"
             value={followupText}
             onChange={(e) => setFollowupText(e.target.value)}
-            placeholder="Type or say a follow-up (e.g. 'What is on the table to my right?')"
+            placeholder="Ask a follow-up (e.g. 'What is to my right?', 'Are there any hazards?')"
             className="flex-1 rounded-[var(--radius-sm)] border border-[var(--border-neutral)] bg-[var(--bg-surface)] px-3 py-2 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:ring-2 focus:ring-[var(--focus-ring)]"
           />
           <button
@@ -264,22 +477,20 @@ export function SurroundingsMode() {
             className="btn-secondary whitespace-nowrap text-xs font-semibold"
             disabled={!followupText.trim()}
           >
-            Send
+            Ask
           </button>
         </form>
       </section>
 
-      {/* Accessibility & Design Guarantees Card */}
+      {/* Constraints Notice */}
       <section aria-labelledby="spec-heading" className="card border-l-4 border-l-[var(--accent-primary)] bg-[var(--bg-surface)]">
         <h4 id="spec-heading" className="text-xs font-bold uppercase tracking-wider text-[var(--text-primary)] mb-1">
-          Surroundings Mode Design Constraints
+          Alexa+ Voice Client Operational Guarantee
         </h4>
-        <ul className="text-xs text-[var(--text-secondary)] space-y-1 list-disc list-inside">
-          <li><strong>Cadence:</strong> 1 frame every 5s (~12 calls/min), well inside Google AI Studio free-tier limit.</li>
-          <li><strong>Zero Persistent Storage:</strong> Captured camera frames are processed in-memory and immediately discarded.</li>
-          <li><strong>Relative Positioning:</strong> Uses natural relative descriptions (&quot;just ahead of you&quot;, &quot;to your right&quot;) rather than fabricated millimeter measurements.</li>
-        </ul>
+        <p className="text-xs text-[var(--text-secondary)]">
+          Runs on a strictly paced 5-second loop (~12 calls/min). In-memory frame change detection prevents redundant calls when the camera is stationary. Frames are never written to disk or stored beyond the active session.
+        </p>
       </section>
     </div>
   );
-};
+}

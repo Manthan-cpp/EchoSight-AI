@@ -344,3 +344,26 @@ Manthan's standing constraint across all projects: free tiers only, no paid APIs
     npm run test:stdio        # Tests Stdio transport
     npm run inspector         # Launches official MCP Inspector Web UI
     ```
+
+- **Phase 5 completed (2026-10-19):**
+  - **Completed:**
+    - Built simulated Alexa+ Voice Client connecting browser client to EchoSight MCP server via `mcpClient.ts`.
+    - Integrated native Web Speech API in `speechService.ts`: Speech Synthesis (TTS, steady rate 0.95) and Speech Recognition (STT, voice commands and hands-free follow-up questions).
+    - Wired live camera feed in `SurroundingsMode.tsx`: offscreen 640x480 frame capture on strict 5-second cadence (~12 calls/min) invoking `describe_surroundings` with in-memory frame difference check.
+    - Implemented voice-first real-time audio playback: automatically speaks each surroundings observation and visual breakdown as it arrives.
+    - Implemented mid-session interrupting follow-ups: user can ask typed or spoken follow-up queries while Surroundings Mode is active or on visual breakdowns, resolved via `ask_followup` with conversational history.
+    - Wired `VisualAnalysis.tsx` for still images (`analyze_visual`), video clips (`analyze_video`), and match scorecards (`analyze_scorecard`) with proactive insight callouts and conversational memory.
+    - Verified complete client and server production builds (`npm run build`) with zero TypeScript errors.
+  - **Deviations from plan:** None.
+  - **Open issues:** None.
+  - **Exact commands to resume / verify current state:**
+    ```bash
+    # Terminal 1 - Backend MCP Server
+    cd server
+    npm run dev          # Runs server on http://localhost:3001
+
+    # Terminal 2 - Frontend Simulated Alexa+ Client
+    cd client
+    npm run dev          # Runs client on http://localhost:5173
+    ```
+

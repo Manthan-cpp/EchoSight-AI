@@ -4,6 +4,13 @@ import dotenv from 'dotenv';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { createEchoSightServer } from './server.js';
+import {
+  describeSurroundingsFrame,
+  analyzeStillImage,
+  narrateVideoClip,
+  analyzeScorecard,
+  answerFollowup,
+} from './pipeline.js';
 
 dotenv.config();
 
@@ -82,6 +89,81 @@ if (isStdioMode) {
       if (!res.headersSent) {
         res.status(500).send('Internal Server Error');
       }
+    }
+  });
+
+  // Direct tool invocation endpoint for the Alexa+ Simulated Voice Client
+  app.post('/api/tools/:name', async (req, res) => {
+    const toolName = req.params.name;
+    const args = req.body || {};
+
+    try {
+      if (toolName === 'ping') {
+        res.json({
+          status: 'ok',
+          spokenText: 'EchoSight MCP server is online and operational.',
+          detailedText: 'EchoSight MCP Server v0.1.0 on Streamable HTTP/SSE.',
+        });
+      } else if (toolName === 'describe_surroundings') {
+        if (!args.image_base64) {
+          res.status(400).json({ error: 'Missing required image_base64 parameter' });
+          return;
+        }
+        const frameBuffer = Buffer.from(args.image_base64, 'base64');
+        const prevBuffer = args.prev_frame_base64 ? Buffer.from(args.prev_frame_base64, 'base64') : null;
+        const result = await describeSurroundingsFrame(
+          frameBuffer,
+          args.mime_type || 'image/jpeg',
+          prevBuffer,
+          args.prior_context || ''
+        );
+        res.json(result);
+      } else if (toolName === 'analyze_visual') {
+        if (!args.image_base64) {
+          res.status(400).json({ error: 'Missing required image_base64 parameter' });
+          return;
+        }
+        const imageBuffer = Buffer.from(args.image_base64, 'base64');
+        const result = await analyzeStillImage(imageBuffer, args.mime_type || 'image/png', {
+          focus: args.focus,
+          priorContext: args.prior_context,
+        });
+        res.json(result);
+      } else if (toolName === 'analyze_video') {
+        if (!args.video_base64) {
+          res.status(400).json({ error: 'Missing required video_base64 parameter' });
+          return;
+        }
+        const videoBuffer = Buffer.from(args.video_base64, 'base64');
+        const result = await narrateVideoClip(videoBuffer, args.mime_type || 'video/mp4');
+        res.json(result);
+      } else if (toolName === 'analyze_scorecard') {
+        if (!args.image_base64) {
+          res.status(400).json({ error: 'Missing required image_base64 parameter' });
+          return;
+        }
+        const imageBuffer = Buffer.from(args.image_base64, 'base64');
+        const result = await analyzeScorecard(imageBuffer, args.mime_type || 'image/jpeg');
+        res.json(result);
+      } else if (toolName === 'ask_followup') {
+        if (!args.question) {
+          res.status(400).json({ error: 'Missing required question parameter' });
+          return;
+        }
+        const imageBuffer = args.image_base64 ? Buffer.from(args.image_base64, 'base64') : undefined;
+        const result = await answerFollowup(
+          args.question,
+          args.prior_context || '',
+          imageBuffer,
+          args.mime_type
+        );
+        res.json(result);
+      } else {
+        res.status(404).json({ error: `Tool not found: ${toolName}` });
+      }
+    } catch (err: any) {
+      console.error(`[EchoSight] Tool error on ${toolName}:`, err.message);
+      res.status(500).json({ error: err.message });
     }
   });
 
