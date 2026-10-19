@@ -13,7 +13,8 @@
     "test:sse": "node test/test_sse.js",
     "test:pipeline": "node test/test_pipeline_e2e.js",
     "test:surroundings": "node test/test_surroundings_loop.js",
-    "test:tools": "node test/test_mcp_all_tools.js"
+    "test:tools": "node test/test_mcp_all_tools.js",
+    "test:differentiators": "node test/test_phase6_differentiators.js"
   },
   "dependencies": {
     "@google/genai": "^2.30.0",

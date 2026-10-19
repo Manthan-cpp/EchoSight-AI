@@ -17,13 +17,16 @@ export function SurroundingsMode() {
   const [isVoiceActive, setIsVoiceActive] = useState<boolean>(false);
   const [isAnalyzingFrame, setIsAnalyzingFrame] = useState<boolean>(false);
   const [cadenceSeconds] = useState<number>(5);
+  const [sessionSeconds, setSessionSeconds] = useState<number>(0);
   const [followupText, setFollowupText] = useState<string>('');
   const [transcripts, setTranscripts] = useState<TranscriptItem[]>([]);
 
+  const MAX_SESSION_SECONDS = 300; // 5-minute maximum continuous session safety bound
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
   const intervalRef = useRef<any>(null);
+  const sessionTimerRef = useRef<any>(null);
   const prevFrameRef = useRef<string | null>(null);
   const priorContextRef = useRef<string>('');
   const isWatchingRef = useRef<boolean>(false);
@@ -116,6 +119,21 @@ export function SurroundingsMode() {
     }
   };
 
+  const formatTime = (totalSeconds: number): string => {
+    const mins = Math.floor(totalSeconds / 60);
+    const secs = totalSeconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const stopWatchingTimeout = () => {
+    stopWatchingInternal();
+    addTranscript(
+      'Surroundings session reached 5-minute safety limit. Paused to preserve quota and battery. Press start to resume anytime.',
+      'system'
+    );
+    speakText('Surroundings session paused after five minutes to preserve quota. Press start to resume.');
+  };
+
   /**
    * Start Surroundings Mode.
    */
@@ -137,6 +155,18 @@ export function SurroundingsMode() {
       }
 
       addTranscript('Camera active. Analyzing surroundings every 5 seconds.', 'system');
+
+      setSessionSeconds(0);
+      if (sessionTimerRef.current) clearInterval(sessionTimerRef.current);
+      sessionTimerRef.current = setInterval(() => {
+        setSessionSeconds((prev) => {
+          if (prev + 1 >= MAX_SESSION_SECONDS) {
+            stopWatchingTimeout();
+            return MAX_SESSION_SECONDS;
+          }
+          return prev + 1;
+        });
+      }, 1000);
 
       // Run initial check after 1.5 seconds, then every 5 seconds
       setTimeout(processCadenceCycle, 1500);
@@ -160,6 +190,11 @@ export function SurroundingsMode() {
     setIsWatching(false);
     setIsCameraActive(false);
     setIsAnalyzingFrame(false);
+
+    if (sessionTimerRef.current) {
+      clearInterval(sessionTimerRef.current);
+      sessionTimerRef.current = null;
+    }
 
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
@@ -206,6 +241,33 @@ export function SurroundingsMode() {
     if (lower.includes('start surroundings') || lower.includes('describe surroundings') || lower.includes('start watching')) {
       if (!isWatching) {
         startWatching();
+      }
+      return;
+    }
+
+    // Exhaustive detail drill-down on request
+    if (
+      lower.includes('tell me everything') ||
+      lower.includes('more detail') ||
+      lower.includes('all details') ||
+      lower.includes('exhaustive')
+    ) {
+      stopSpeaking();
+      addTranscript('Requesting exhaustive spatial breakdown...', 'system');
+      try {
+        const currentFrame = captureFrameBase64();
+        const result = await callTool('ask_followup', {
+          question:
+            'Please describe everything in the current view in exhaustive, patient, line-by-line detail, including spatial positioning, textures, objects, and any navigation obstacles.',
+          prior_context: priorContextRef.current,
+          image_base64: currentFrame || undefined,
+          mime_type: currentFrame ? 'image/jpeg' : undefined,
+        });
+        addTranscript(result.spokenText, 'observation');
+        speakText(result.spokenText);
+      } catch (err: any) {
+        addTranscript(`Could not resolve detail request: ${err.message}`, 'system');
+        speakText('Sorry, I had trouble retrieving exhaustive details.');
       }
       return;
     }
@@ -341,8 +403,11 @@ export function SurroundingsMode() {
               <div className="flex items-center gap-2">
                 <span className="h-2 w-2 rounded-[2px] bg-[var(--accent-primary)]" aria-hidden="true" />
                 <span className="font-medium">Cadence: ~{cadenceSeconds}s Loop</span>
+                <span className="text-[var(--text-secondary)]">
+                  • Session: {formatTime(sessionSeconds)} / {formatTime(MAX_SESSION_SECONDS)}
+                </span>
               </div>
-              <span className="text-[var(--text-secondary)]">
+              <span className="text-[var(--text-secondary)] font-medium">
                 {isAnalyzingFrame ? 'Reasoning...' : 'Connected to MCP Server'}
               </span>
             </div>

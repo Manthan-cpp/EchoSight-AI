@@ -28,6 +28,10 @@ const assets = [
     url: 'https://upload.wikimedia.org/wikipedia/commons/e/e0/Kumar%27s_cricket_scores.jpg',
   },
   {
+    name: 'cricket_scoreboard_match2.jpg',
+    url: 'https://upload.wikimedia.org/wikipedia/commons/c/c5/Cricket_Scoreboard_-_geograph.org.uk_-_286372.jpg',
+  },
+  {
     name: 'sample_video.webm',
     url: 'https://upload.wikimedia.org/wikipedia/commons/1/18/Mp4_web_test.webm',
   },

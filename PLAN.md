@@ -367,3 +367,20 @@ Manthan's standing constraint across all projects: free tiers only, no paid APIs
     npm run dev          # Runs client on http://localhost:5173
     ```
 
+- **Phase 6 completed (2026-10-19):**
+  - **Completed:**
+    - Lead Feature 1 (Surroundings Mode): Enforced relative spatial phrasing ("just ahead of you", "to your left"), 50% call savings on static views via pixel delta hashing, and added a 5-minute (300s) continuous session safety bound with countdown UI and spoken notification to protect the free-tier quota.
+    - Lead Feature 2 (Proactive Insight): First-pass visual analysis automatically surfaces actionable takeaways upfront before inviting deeper exploration.
+    - Lead Feature 3 (Exhaustive Detail on Request): Handled "tell me everything" and detail requests seamlessly, expanding into granular breakdowns of timeline metrics, axes, and uncertainty bounds.
+    - Lead Feature 4 (Scorecard Reasoning): Verified contextual reasoning across 2 real, distinct match situations (`cricket_scorecard.jpg` vintage tournament press report vs `cricket_scoreboard_match2.jpg` club ground scoreboard).
+    - Supporting Features 5–8 Verified: Continuous video narration, multi-turn conversational drill-downs, degraded image confidence check with retake guidance, and complex transit route map interpretation.
+    - Built and executed automated suite `npm run test:differentiators` verifying all 4 lead and 4 supporting differentiators with 100% pass rate.
+  - **Deviations from plan:** None.
+  - **Open issues:** None.
+  - **Exact commands to resume / verify current state:**
+    ```bash
+    cd server
+    npm run test:differentiators  # Runs full Phase 6 differentiator test suite
+    ```
+
+
