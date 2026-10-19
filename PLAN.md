@@ -291,3 +291,30 @@ Manthan's standing constraint across all projects: free tiers only, no paid APIs
     npm run test:sse     # Tests ping tool over Streamable HTTP/SSE
     npm run inspector    # Launches official MCP Inspector Web UI
     ```
+
+- **Phase 3 completed (2026-10-19):**
+  - **Completed:**
+    - Integrated `@google/genai` with `gemini-3.8-flash` (Google's active model, configured in `.env`).
+    - Implemented `server/src/pipeline.ts` with accessibility-first system prompt, patient exhaustive walkthrough reasoning, proactive insight extraction, and honest relative spatial positioning.
+    - Sourced 5 real public-domain test images, 1 real video clip, and 1 degraded test image into `server/test_assets/`:
+      1. `global_temperature.jpg` (NASA/GISS climate science anomaly chart)
+      2. `race_income_demographics.png` (US Census demographic clustered bar chart)
+      3. `transit_map.png` (Greater Surakarta multi-tier transit route map)
+      4. `indoor_desk_workspace.jpg` (indoor workspace scene with laptop/lamp/notebook)
+      5. `cricket_scorecard.jpg` (newspaper match reports and score card)
+      6. `sample_video.webm` (continuous CAD engineering screen recording)
+      7. `bad_blurry_input.jpg` (degraded input for negative testing)
+    - Built resilient auto-retry mechanism (`generateWithRetry`) with exponential backoff handling transient 503 / 429 service spikes.
+    - Implemented cheap in-memory frame difference algorithm (`calculateFrameDifference`) comparing consecutive frames.
+    - Verified all 7 pipeline test cases in `test_pipeline_e2e.js` (`npm run test:pipeline`) with 100% success.
+    - Verified continuous Surroundings Mode loop in `test_surroundings_loop.js` (`npm run test:surroundings`) across 12 cycles at 5s cadence: frame-change detection saved 50% of API calls (6 calls saved out of 12), with zero crashes and zero throttles.
+  - **Deviations from plan:** Updated model from deprecated `gemini-2.5-flash` to active `gemini-3.8-flash` per Google API instruction.
+  - **Open issues:** None.
+  - **Exact commands to resume / verify current state:**
+    ```bash
+    cd server
+    npm install
+    npm run build
+    npm run test:pipeline      # Runs full E2E vision/video/scorecard tests
+    npm run test:surroundings  # Runs live 5s cadence surroundings loop
+    ```
