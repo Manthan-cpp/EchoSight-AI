@@ -1,5 +1,12 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import {
+  analyzeStillImage,
+  analyzeScorecard,
+  narrateVideoClip,
+  describeSurroundingsFrame,
+  answerFollowup,
+} from './pipeline.js';
 
 export function createEchoSightServer(): McpServer {
   const server = new McpServer({
@@ -7,7 +14,185 @@ export function createEchoSightServer(): McpServer {
     version: '0.1.0',
   });
 
-  // Baseline tool for Phase 2: ping
+  // Tool 1: describe_surroundings (Flagship tool for live camera loop)
+  server.tool(
+    'describe_surroundings',
+    'Primary tool for live Surroundings Mode. Analyzes incoming camera frame to provide spoken relative spatial descriptions of nearby objects and navigation landmarks at a ~5-second cadence.',
+    {
+      image_base64: z.string().describe('Base64-encoded JPEG/PNG/WebP camera frame'),
+      mime_type: z.string().optional().default('image/jpeg').describe('MIME format of the frame (e.g. image/jpeg)'),
+      prior_context: z.string().optional().default('').describe('Recent context or description to maintain conversational continuity'),
+      prev_frame_base64: z.string().optional().describe('Optional previous frame to evaluate in-memory scene difference'),
+    },
+    async ({ image_base64, mime_type, prior_context, prev_frame_base64 }) => {
+      try {
+        const frameBuffer = Buffer.from(image_base64, 'base64');
+        const prevBuffer = prev_frame_base64 ? Buffer.from(prev_frame_base64, 'base64') : null;
+
+        const result = await describeSurroundingsFrame(frameBuffer, mime_type, prevBuffer, prior_context);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: result.spokenText,
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: 'text',
+              text: `Error analyzing surroundings: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 2: analyze_visual (Still charts, maps, diagrams, documents)
+  server.tool(
+    'analyze_visual',
+    'Provides patient, exhaustive, structured spoken walkthroughs of charts, diagrams, tables, maps, and photographs.',
+    {
+      image_base64: z.string().describe('Base64-encoded image content'),
+      mime_type: z.string().optional().default('image/png').describe('Image MIME type (image/png, image/jpeg, image/webp)'),
+      focus: z.string().optional().describe('Optional user focus area (e.g. "trend", "axes", "anomalies", "outliers")'),
+      prior_context: z.string().optional().describe('Optional previous dialogue context'),
+    },
+    async ({ image_base64, mime_type, focus, prior_context }) => {
+      try {
+        const imageBuffer = Buffer.from(image_base64, 'base64');
+        const result = await analyzeStillImage(imageBuffer, mime_type, { focus, priorContext: prior_context });
+        return {
+          content: [
+            {
+              type: 'text',
+              text: result.spokenText,
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: 'text',
+              text: `Error analyzing visual: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 3: analyze_video (Continuous short clip narration)
+  server.tool(
+    'analyze_video',
+    'Narrates short recorded video clips (up to 30s) chronologically as a continuous scene.',
+    {
+      video_base64: z.string().describe('Base64-encoded video file content'),
+      mime_type: z.string().optional().default('video/mp4').describe('Video MIME type (video/mp4 or video/webm)'),
+    },
+    async ({ video_base64, mime_type }) => {
+      try {
+        const videoBuffer = Buffer.from(video_base64, 'base64');
+        const result = await narrateVideoClip(videoBuffer, mime_type);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: result.spokenText,
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: 'text',
+              text: `Error narrating video: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 4: analyze_scorecard (Sports data and match reasoning)
+  server.tool(
+    'analyze_scorecard',
+    'Contextually reasons over cricket and sports match scorecards, explaining match situation, momentum, and run rates.',
+    {
+      image_base64: z.string().describe('Base64-encoded match graphic or scorecard image'),
+      mime_type: z.string().optional().default('image/jpeg').describe('Scorecard image MIME type'),
+    },
+    async ({ image_base64, mime_type }) => {
+      try {
+        const imageBuffer = Buffer.from(image_base64, 'base64');
+        const result = await analyzeScorecard(imageBuffer, mime_type);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: result.spokenText,
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: 'text',
+              text: `Error analyzing scorecard: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 5: ask_followup (Conversational memory and context resolution)
+  server.tool(
+    'ask_followup',
+    'Answers follow-up conversational questions about a recently described scene, chart, or scorecard without restating full context.',
+    {
+      question: z.string().describe('The user follow-up question (e.g. "What did you say was on the left?", "Who was the bowler?")'),
+      prior_context: z.string().describe('The previous description or transcript content'),
+      image_base64: z.string().optional().describe('Optional base64 image if re-inspection is required'),
+      mime_type: z.string().optional().default('image/jpeg').describe('Image MIME type if image_base64 is provided'),
+    },
+    async ({ question, prior_context, image_base64, mime_type }) => {
+      try {
+        const imageBuffer = image_base64 ? Buffer.from(image_base64, 'base64') : undefined;
+        const result = await answerFollowup(question, prior_context, imageBuffer, image_base64 ? mime_type : undefined);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: result.spokenText,
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: 'text',
+              text: `Error answering follow-up: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Baseline tool: ping
   server.tool(
     'ping',
     'Verify EchoSight MCP server connectivity, protocol spec, and health status.',
@@ -22,6 +207,14 @@ export function createEchoSightServer(): McpServer {
         timestamp: new Date().toISOString(),
         protocol: 'MCP Spec 2025-11-25+',
         transport: 'Streamable HTTP / SSE',
+        availableTools: [
+          'describe_surroundings',
+          'analyze_visual',
+          'analyze_video',
+          'analyze_scorecard',
+          'ask_followup',
+          'ping',
+        ],
         message: message ? `pong: ${message}` : 'pong',
       };
 

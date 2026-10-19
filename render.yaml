@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: echosight-mcp-server
+    runtime: node
+    plan: free
+    rootDir: server
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: GEMINI_MODEL
+        value: gemini-3.7-flash
+      - key: GEMINI_API_KEY
+        sync: false

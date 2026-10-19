@@ -41,33 +41,62 @@ function getAiClient(): GoogleGenAI {
   return aiClient;
 }
 
+const CANDIDATE_MODELS = [
+  process.env.GEMINI_MODEL || 'gemini-3.7-flash',
+  'gemini-3.7-flash',
+  'gemini-3.5-flash-lite',
+  'gemini-3.8-flash',
+];
+
 function getModelName(): string {
-  return process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+  return CANDIDATE_MODELS[0];
 }
 
 /**
- * Resilient caller with automatic exponential backoff for transient 503 / 429 spikes.
+ * Resilient caller with automatic multi-model fallback cascade and exponential backoff.
  */
-async function generateWithRetry(params: any, maxRetries = 3): Promise<any> {
+async function generateWithRetry(baseParams: any, maxRetries = 2): Promise<any> {
   const ai = getAiClient();
-  let delay = 2500;
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      return await ai.models.generateContent(params);
-    } catch (err: any) {
-      const isTransient =
-        err.status === 503 ||
-        err.status === 429 ||
-        (err.message && (err.message.includes('503') || err.message.includes('429') || err.message.includes('high demand')));
-      if (isTransient && attempt < maxRetries) {
-        console.warn(`[EchoSight] Transient rate/demand spike (${err.status || '503/429'}), auto-retrying attempt ${attempt + 1}/${maxRetries} in ${delay}ms...`);
-        await new Promise((resolve) => setTimeout(resolve, delay));
-        delay *= 1.5;
-        continue;
+  const modelsToTry = Array.from(new Set(CANDIDATE_MODELS));
+  let lastError: any = null;
+
+  for (const model of modelsToTry) {
+    let delay = 2000;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const params = { ...baseParams, model };
+        return await ai.models.generateContent(params);
+      } catch (err: any) {
+        lastError = err;
+        const msg = String(err.message || '');
+        const isQuotaExhausted =
+          err.status === 429 ||
+          msg.includes('429') ||
+          msg.includes('quota') ||
+          msg.includes('RESOURCE_EXHAUSTED');
+        const isTransient503 =
+          err.status === 503 ||
+          msg.includes('503') ||
+          msg.includes('high demand');
+
+        if (isQuotaExhausted) {
+          console.warn(`[EchoSight] Model ${model} quota limit reached, cascading to next model...`);
+          break; // Cascade to next model immediately
+        }
+
+        if (isTransient503 && attempt < maxRetries) {
+          console.warn(`[EchoSight] Transient 503 spike on ${model}, retrying in ${delay}ms...`);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          delay *= 1.5;
+          continue;
+        }
+
+        break;
       }
-      throw err;
     }
   }
+
+  throw lastError;
 }
 
 /**
@@ -338,5 +367,57 @@ ${priorContext ? `Recent context from prior frame: ${priorContext}` : ''}`;
     confidence: 'high',
     isUnchanged: false,
     proactiveInsight: text.split('.')[0] || 'Surroundings updated.',
+  };
+}
+
+/**
+ * Answer conversational follow-up questions referencing recent visual context.
+ */
+export async function answerFollowup(
+  question: string,
+  priorContext: string,
+  imageBuffer?: Buffer,
+  mimeType?: string
+): Promise<PipelineResult> {
+  if (!question || !question.trim()) {
+    throw new Error('Follow-up question cannot be empty.');
+  }
+
+  const prompt = `You are EchoSight answering a follow-up question from a blind or low-vision user about a previously described visual scene or scorecard.
+Prior Context / Recent Description:
+"""
+${priorContext || 'No previous context recorded.'}
+"""
+
+User Follow-Up Question: "${question}"
+
+Provide a direct, concise, spoken response that specifically answers the question without repeating the entire prior description unless necessary. Maintain calm, clear speech phrasing.`;
+
+  const parts: any[] = [{ text: prompt }];
+
+  if (imageBuffer && mimeType) {
+    parts.push({
+      inlineData: {
+        data: imageBuffer.toString('base64'),
+        mimeType,
+      },
+    });
+  }
+
+  const response = await generateWithRetry({
+    model: getModelName(),
+    contents: [{ role: 'user', parts }],
+    config: {
+      systemInstruction: SYSTEM_INSTRUCTION,
+      temperature: 0.2,
+    },
+  });
+
+  const text = response.text?.trim() || 'Unable to resolve follow-up question.';
+  return {
+    spokenText: text,
+    detailedText: text,
+    confidence: 'high',
+    proactiveInsight: text.split('.')[0] || 'Follow-up answered.',
   };
 }
