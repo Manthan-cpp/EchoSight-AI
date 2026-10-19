@@ -269,3 +269,25 @@ Manthan's standing constraint across all projects: free tiers only, no paid APIs
     npm run build
     npm run dev -- --port 5173
     ```
+
+- **Phase 2 completed (2026-10-19):**
+  - **Completed:**
+    - Recorded solo entry (Manthan).
+    - Locked in MCP server stack: Node.js (v24), TypeScript, `@modelcontextprotocol/sdk` (spec 2025-11-25+), Express, and Zod.
+    - Created `server/` scaffold with `.env.example` documenting `GEMINI_API_KEY`, `GEMINI_MODEL=gemini-2.5-flash`, and `PORT=3001`. Verified `.env` is ignored by `.gitignore`.
+    - Built dual-transport MCP Server supporting both **Streamable HTTP / SSE** (`GET /sse`, `POST /messages`, `GET /health`) and **Stdio** (`--stdio`).
+    - Implemented baseline health/handshake tool `ping` returning structured server status, protocol spec, and echo payload.
+    - Verified `ping` tool invocation across both transports using automated test runners (`npm run test:stdio` and `npm run test:sse`).
+    - Configured official MCP Inspector command (`npm run inspector`).
+  - **Deviations from plan:** None.
+  - **Open issues:** User to provide their free-tier Gemini API key in `server/.env` for Phase 3 vision pipeline.
+  - **Exact commands to resume / verify current state:**
+    ```bash
+    cd server
+    npm install
+    npm run build
+    npm start            # Starts Streamable HTTP / SSE on port 3001
+    npm run test:stdio   # Tests ping tool over Stdio
+    npm run test:sse     # Tests ping tool over Streamable HTTP/SSE
+    npm run inspector    # Launches official MCP Inspector Web UI
+    ```
