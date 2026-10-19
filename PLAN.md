@@ -318,3 +318,29 @@ Manthan's standing constraint across all projects: free tiers only, no paid APIs
     npm run test:pipeline      # Runs full E2E vision/video/scorecard tests
     npm run test:surroundings  # Runs live 5s cadence surroundings loop
     ```
+
+- **Phase 4 completed (2026-10-19):**
+  - **Completed:**
+    - Designed and implemented all 5 official MCP tools with strict Zod schemas on `createEchoSightServer`:
+      1. `describe_surroundings`: Live Surroundings Mode camera frame reasoning with in-memory difference check.
+      2. `analyze_visual`: Patient, exhaustive structured walkthroughs of charts, diagrams, tables, and maps.
+      3. `analyze_video`: Continuous chronological narration of recorded video clips up to 30 seconds.
+      4. `analyze_scorecard`: Contextual sports data and match reasoning (runs, overs, run rates, momentum).
+      5. `ask_followup`: Conversational memory resolver answering follow-up queries without restating full context.
+      6. `ping`: Baseline connectivity, health, and tool discovery handshake.
+    - Implemented multi-model fallback cascade (`gemini-3.7-flash` -> `gemini-3.5-flash-lite` -> `gemini-3.8-flash`) ensuring zero interruptions if a single model's free-tier daily cap is reached.
+    - Created official `SKILL.md` Agent Skill package with YAML metadata, voice-first interaction rules, relative spatial phrasing guidelines, and privacy guarantees.
+    - Created `render.yaml` infrastructure-as-code for one-click deployment to Render free tier.
+    - Verified all 5 tools end-to-end through the official MCP Client protocol runner (`npm run test:tools`), and verified dual Stdio (`npm run test:stdio`) and self-contained Streamable HTTP/SSE (`npm run test:sse`) transports.
+  - **Deviations from plan:** Added multi-model cascade to gracefully handle free-tier daily request caps per model.
+  - **Open issues:** None.
+  - **Exact commands to resume / verify current state:**
+    ```bash
+    cd server
+    npm install
+    npm run build
+    npm run test:tools        # Tests all 5 tools via official MCP client protocol
+    npm run test:sse          # Tests Streamable HTTP/SSE transport
+    npm run test:stdio        # Tests Stdio transport
+    npm run inspector         # Launches official MCP Inspector Web UI
+    ```
