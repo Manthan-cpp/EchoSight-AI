@@ -1,0 +1,166 @@
+@import "tailwindcss";
+
+:root {
+  /* Light Mode Palette */
+  --bg-primary: #F8F9FA;
+  --bg-surface: #FFFFFF;
+  --bg-subtle: #F1F3F5;
+  --border-neutral: #D1D5DB;
+  --border-subtle: #E5E7EB;
+  --text-primary: #111827;
+  --text-secondary: #4B5563;
+  --text-muted: #6B7280;
+  --accent-primary: #1E3A8A; /* Deep Navy Blue */
+  --accent-primary-hover: #172554;
+  --accent-text: #FFFFFF;
+  --focus-ring: #1E3A8A;
+  --focus-offset: #FFFFFF;
+  
+  /* Status indicators (calm, non-glowing) */
+  --status-watching-bg: #EFF6FF;
+  --status-watching-text: #1E40AF;
+  --status-watching-border: #BFDBFE;
+  
+  --status-listening-bg: #F0FDF4;
+  --status-listening-text: #166534;
+  --status-listening-border: #BBF7D0;
+  
+  --status-thinking-bg: #F8FAFC;
+  --status-thinking-text: #334155;
+  --status-thinking-border: #CBD5E1;
+  
+  --status-error-bg: #FEF2F2;
+  --status-error-text: #991B1B;
+  --status-error-border: #FCA5A5;
+
+  /* Typography */
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  
+  /* Radii (strictly 4-8px rectangular, zero pills) */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+}
+
+[data-theme="dark"] {
+  /* Dark Mode Palette */
+  --bg-primary: #0F172A;
+  --bg-surface: #1E293B;
+  --bg-subtle: #162032;
+  --border-neutral: #334155;
+  --border-subtle: #1E293B;
+  --text-primary: #F8FAFC;
+  --text-secondary: #94A3B8;
+  --text-muted: #64748B;
+  --accent-primary: #2563EB;
+  --accent-primary-hover: #1D4ED8;
+  --accent-text: #FFFFFF;
+  --focus-ring: #60A5FA;
+  --focus-offset: #0F172A;
+  
+  /* Status indicators (calm, non-glowing) */
+  --status-watching-bg: #172554;
+  --status-watching-text: #BFDBFE;
+  --status-watching-border: #1E40AF;
+  
+  --status-listening-bg: #14532D;
+  --status-listening-text: #BBF7D0;
+  --status-listening-border: #15803D;
+  
+  --status-thinking-bg: #1E293B;
+  --status-thinking-text: #E2E8F0;
+  --status-thinking-border: #475569;
+  
+  --status-error-bg: #450A0A;
+  --status-error-text: #FECACA;
+  --status-error-border: #7F1D1D;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Strict Accessibility Focus Indicators (solid, high-contrast, no neon blur) */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+a:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* Clean, restrained rectangular button styles */
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  background-color: var(--accent-primary);
+  color: var(--accent-text);
+  border: 1px solid var(--accent-primary);
+  border-radius: var(--radius-md);
+  padding: 0.625rem 1rem;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  min-height: 44px; /* Accessible touch target */
+  min-width: 44px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background-color: var(--accent-primary-hover);
+}
+
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  background-color: var(--bg-surface);
+  color: var(--text-primary);
+  border: 1px solid var(--border-neutral);
+  border-radius: var(--radius-md);
+  padding: 0.625rem 1rem;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  min-height: 44px;
+  min-width: 44px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background-color: var(--bg-subtle);
+  border-color: var(--text-secondary);
+}
+
+.btn-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Clean cards with 1px neutral border */
+.card {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-neutral);
+  border-radius: var(--radius-md);
+  padding: 1.25rem;
+}
