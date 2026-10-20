@@ -1,16 +1,15 @@
-import { Eye, Sun, Moon, Volume2 } from 'lucide-react';
+import { Eye, Sun, Moon, Volume2, Radio } from 'lucide-react';
+import type { WorkspaceMode } from './UnifiedCoPilot';
 
 interface NavbarProps {
-  currentTab: 'surroundings' | 'analysis';
-  setCurrentTab: (tab: 'surroundings' | 'analysis') => void;
+  activeMode?: WorkspaceMode;
   isDark: boolean;
   setIsDark: (dark: boolean) => void;
   onSpeakGreeting: () => void;
 }
 
 export function Navbar({
-  currentTab,
-  setCurrentTab,
+  activeMode = 'standby',
   isDark,
   setIsDark,
   onSpeakGreeting,
@@ -33,31 +32,32 @@ export function Navbar({
           </div>
         </div>
 
-        {/* Navigation Tabs - Strict rectangular buttons, zero pills */}
-        <nav aria-label="Main Navigation" className="flex items-center gap-1.5">
-          <button
-            onClick={() => setCurrentTab('surroundings')}
-            className={`px-3 py-1.5 text-sm font-medium rounded-[var(--radius-sm)] border transition-colors ${
-              currentTab === 'surroundings'
-                ? 'bg-[var(--accent-primary)] text-[var(--accent-text)] border-[var(--accent-primary)]'
-                : 'bg-[var(--bg-surface)] text-[var(--text-primary)] border-[var(--border-neutral)] hover:bg-[var(--bg-subtle)]'
+        {/* Unified Mode HUD Status Badge */}
+        <div className="flex items-center gap-2">
+          <div
+            className={`px-3 py-1 text-xs font-semibold rounded-[var(--radius-sm)] border flex items-center gap-2 transition-colors ${
+              activeMode === 'radar'
+                ? 'bg-[var(--status-listening-bg)] text-[var(--status-listening-text)] border-[var(--status-listening-border)]'
+                : activeMode === 'inspection'
+                ? 'bg-[var(--bg-subtle)] text-[var(--accent-primary)] border-[var(--accent-primary)]'
+                : 'bg-[var(--bg-subtle)] text-[var(--text-secondary)] border-[var(--border-neutral)]'
             }`}
-            aria-current={currentTab === 'surroundings' ? 'page' : undefined}
+            role="status"
           >
-            Surroundings Mode
-          </button>
-          <button
-            onClick={() => setCurrentTab('analysis')}
-            className={`px-3 py-1.5 text-sm font-medium rounded-[var(--radius-sm)] border transition-colors ${
-              currentTab === 'analysis'
-                ? 'bg-[var(--accent-primary)] text-[var(--accent-text)] border-[var(--accent-primary)]'
-                : 'bg-[var(--bg-surface)] text-[var(--text-primary)] border-[var(--border-neutral)] hover:bg-[var(--bg-subtle)]'
-            }`}
-            aria-current={currentTab === 'analysis' ? 'page' : undefined}
-          >
-            Visual Analysis
-          </button>
-        </nav>
+            <Radio
+              className={`h-3.5 w-3.5 ${
+                activeMode === 'radar' ? 'animate-pulse text-emerald-500' : ''
+              }`}
+            />
+            <span>
+              {activeMode === 'radar'
+                ? 'Walking Radar'
+                : activeMode === 'inspection'
+                ? 'Snapshot Inspection'
+                : 'Unified Workspace'}
+            </span>
+          </div>
+        </div>
 
         {/* Utility Controls */}
         <div className="flex items-center gap-2">
@@ -85,4 +85,4 @@ export function Navbar({
       </div>
     </header>
   );
-};
+}

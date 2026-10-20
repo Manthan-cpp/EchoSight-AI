@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Eye } from 'lucide-react';
 import { Navbar } from './components/Navbar';
-import { SurroundingsMode } from './components/SurroundingsMode';
-import { VisualAnalysis } from './components/VisualAnalysis';
+import { UnifiedCoPilot, type WorkspaceMode } from './components/UnifiedCoPilot';
 import {
   speakText,
   stopSpeaking,
@@ -15,7 +14,7 @@ export function App() {
   const [hasEntered, setHasEntered] = useState<boolean>(false);
   const [isVoiceEnabled, setIsVoiceEnabled] = useState<boolean>(true);
   const [isListeningForEnter, setIsListeningForEnter] = useState<boolean>(false);
-  const [currentTab, setCurrentTab] = useState<'surroundings' | 'analysis'>('surroundings');
+  const [activeMode, setActiveMode] = useState<WorkspaceMode>('standby');
   const [isDark, setIsDark] = useState<boolean>(false);
   const [spokenAlert, setSpokenAlert] = useState<string>('');
   const hasSpokenGreetingRef = useRef<boolean>(false);
@@ -34,8 +33,7 @@ export function App() {
     setHasEntered(true);
     stopSpeaking();
     markCommandHandled('enter');
-    setCurrentTab('surroundings');
-    const msg = "Entering Surroundings Mode. Say 'start surroundings' to begin.";
+    const msg = "Welcome to EchoSight. Say 'start surroundings' for walking guidance, 'take a photo', or 'pick a file'.";
     setSpokenAlert(msg);
     speakText(msg);
   };
@@ -91,7 +89,7 @@ export function App() {
 
   // Spoken intro trigger for Navbar
   const speakIntro = () => {
-    const intro = 'EchoSight. Voice-First Spatial and Visual Co-Pilot. You are in Surroundings Mode. Say Start Surroundings to begin.';
+    const intro = "EchoSight. Voice-First Spatial & Visual Co-Pilot. Say 'start surroundings' for walking guidance, 'take a photo', or 'pick a file'.";
     setSpokenAlert(intro);
     speakText(intro);
   };
@@ -100,43 +98,53 @@ export function App() {
   if (!hasEntered) {
     return (
       <div
+        onClick={handleEnter}
+        className="min-h-screen bg-[var(--bg-primary)] flex flex-col items-center justify-center p-6 text-center cursor-pointer select-none"
         role="button"
         tabIndex={0}
-        onClick={handleEnter}
-        aria-label="Welcome screen. Say Enter or tap anywhere to begin."
-        className="min-h-screen bg-[var(--bg-primary)] text-[var(--text-primary)] flex flex-col items-center justify-center p-8 cursor-pointer select-none text-center outline-none focus:ring-4 focus:ring-[var(--focus-ring)] transition-colors"
+        aria-label="Tap or press Enter to launch EchoSight Voice Assistant"
       >
-        {/* Screen reader live notification channel */}
-        <div className="sr-only" role="status" aria-live="polite">
-          {spokenAlert}
-        </div>
-
-        <div className="max-w-md space-y-6">
-          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-[var(--radius-md)] border border-[var(--border-neutral)] bg-[var(--bg-surface)] text-[var(--text-primary)]">
-            <Eye className="h-8 w-8" aria-hidden="true" />
+        <div className="max-w-md w-full space-y-8 animate-fade-in">
+          {/* Big High-Contrast Central Icon */}
+          <div className="mx-auto flex h-24 w-24 items-center justify-center rounded-2xl bg-[var(--bg-subtle)] border-2 border-[var(--border-neutral)] shadow-lg">
+            <Eye className="h-12 w-12 text-[var(--accent-primary)]" aria-hidden="true" />
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-3">
             <h1 className="text-3xl font-bold tracking-tight text-[var(--text-primary)]">
               EchoSight
             </h1>
-            <p className="text-sm text-[var(--text-secondary)]">
+            <p className="text-sm font-medium text-[var(--text-secondary)]">
               Voice-First Spatial & Visual Co-Pilot
             </p>
           </div>
 
-          <div className="pt-4 space-y-3">
-            <div className="inline-flex items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border-neutral)] bg-[var(--bg-surface)] px-4 py-2.5 text-sm font-medium text-[var(--text-primary)] shadow-sm">
-              {isListeningForEnter ? (
-                <>
-                  <span className="h-2 w-2 rounded-full bg-[var(--accent-primary)] animate-pulse" />
-                  <span>Listening... Say <strong>"Enter"</strong> or tap anywhere</span>
-                </>
-              ) : (
-                <span>Tap anywhere or press Enter to begin</span>
-              )}
-            </div>
+          {/* Action Callout Box */}
+          <div className="p-5 rounded-[var(--radius-md)] border-2 border-[var(--accent-primary)] bg-[var(--bg-subtle)] text-[var(--text-primary)] shadow-sm space-y-2">
+            <p className="text-base font-semibold">
+              Say &quot;Enter&quot; or tap anywhere to begin
+            </p>
+            <p className="text-xs text-[var(--text-secondary)]">
+              Press Enter or Space on keyboard • Fully voice-operated
+            </p>
+          </div>
 
+          {/* Hands-Free Voice Status */}
+          <div className="flex items-center justify-center gap-2 text-xs text-[var(--text-secondary)]">
+            <span
+              className={`h-2.5 w-2.5 rounded-full ${
+                isListeningForEnter ? 'bg-[var(--accent-primary)] animate-pulse' : 'bg-slate-400'
+              }`}
+            />
+            <span>
+              {isListeningForEnter
+                ? 'Microphone listening for "Enter"'
+                : 'Microphone initializing...'}
+            </span>
+          </div>
+
+          {/* Accessibility Note */}
+          <div className="pt-4 border-t border-[var(--border-neutral)]">
             <p className="text-xs text-[var(--text-secondary)]">
               Designed for blind & low-vision navigation • Fully voice-operated
             </p>
@@ -146,7 +154,7 @@ export function App() {
     );
   }
 
-  // 2. Main Application Page (Surroundings Mode & Visual Analysis)
+  // 2. Main Application Page (Unified Voice Co-Pilot Workspace)
   return (
     <div className="min-h-screen bg-[var(--bg-primary)] text-[var(--text-primary)] flex flex-col">
       {/* Screen reader live notification channel */}
@@ -156,29 +164,19 @@ export function App() {
 
       {/* Top Accessible Navbar */}
       <Navbar
-        currentTab={currentTab}
-        setCurrentTab={setCurrentTab}
+        activeMode={activeMode}
         isDark={isDark}
         setIsDark={setIsDark}
         onSpeakGreeting={speakIntro}
       />
 
-      {/* Main Content Surface */}
+      {/* Main Content Surface (Unified Workspace) */}
       <main className="flex-1 px-4 py-6 max-w-4xl mx-auto w-full">
-        {currentTab === 'surroundings' && (
-          <SurroundingsMode
-            isVoiceActive={isVoiceEnabled}
-            setIsVoiceActive={setIsVoiceEnabled}
-            onNavigateTab={setCurrentTab}
-          />
-        )}
-        {currentTab === 'analysis' && (
-          <VisualAnalysis
-            isVoiceActive={isVoiceEnabled}
-            setIsVoiceActive={setIsVoiceEnabled}
-            onNavigateTab={setCurrentTab}
-          />
-        )}
+        <UnifiedCoPilot
+          isVoiceActive={isVoiceEnabled}
+          setIsVoiceActive={setIsVoiceEnabled}
+          onModeChange={setActiveMode}
+        />
       </main>
 
       {/* Calm, Accessible Footer */}
