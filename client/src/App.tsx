@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef } from 'react';
-import { Eye } from 'lucide-react';
 import { Navbar } from './components/Navbar';
 import { UnifiedCoPilot, type WorkspaceMode } from './components/UnifiedCoPilot';
 import {
@@ -105,15 +104,16 @@ export function App() {
         aria-label="Tap or press Enter to launch EchoSight Voice Assistant"
       >
         <div className="max-w-md w-full space-y-8 animate-fade-in">
-          {/* Big High-Contrast Central Icon */}
-          <div className="mx-auto flex h-24 w-24 items-center justify-center rounded-2xl bg-[var(--bg-subtle)] border-2 border-[var(--border-neutral)] shadow-lg">
-            <Eye className="h-12 w-12 text-[var(--accent-primary)]" aria-hidden="true" />
+          {/* Big High-Contrast Central Brand Logo */}
+          <div className="mx-auto flex items-center justify-center p-4 rounded-2xl bg-[var(--bg-subtle)] border-2 border-[var(--border-neutral)] shadow-lg max-w-sm">
+            <img
+              src="/logo.png"
+              alt="EchoSight Logo"
+              className="h-16 w-auto object-contain"
+            />
           </div>
 
-          <div className="space-y-3">
-            <h1 className="text-3xl font-bold tracking-tight text-[var(--text-primary)]">
-              EchoSight
-            </h1>
+          <div className="space-y-1">
             <p className="text-sm font-medium text-[var(--text-secondary)]">
               Voice-First Spatial & Visual Co-Pilot
             </p>

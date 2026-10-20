@@ -1,4 +1,4 @@
-import { Eye, Sun, Moon, Volume2, Radio } from 'lucide-react';
+import { Sun, Moon, Volume2, Radio } from 'lucide-react';
 import type { WorkspaceMode } from './UnifiedCoPilot';
 
 interface NavbarProps {
@@ -17,16 +17,15 @@ export function Navbar({
   return (
     <header className="border-b border-[var(--border-neutral)] bg-[var(--bg-surface)] px-4 py-3">
       <div className="mx-auto flex max-w-4xl flex-wrap items-center justify-between gap-3">
-        {/* Brand */}
+        {/* Brand with Official Logo */}
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-[var(--radius-md)] border border-[var(--border-neutral)] bg-[var(--bg-subtle)] text-[var(--text-primary)]">
-            <Eye className="h-5 w-5" aria-hidden="true" />
-          </div>
-          <div>
-            <h1 className="text-lg font-semibold tracking-tight text-[var(--text-primary)]">
-              EchoSight
-            </h1>
-            <p className="text-xs text-[var(--text-secondary)]">
+          <img
+            src="/logo.png"
+            alt="EchoSight Logo"
+            className="h-8 sm:h-9 w-auto object-contain"
+          />
+          <div className="hidden sm:block border-l border-[var(--border-neutral)] pl-3">
+            <p className="text-xs text-[var(--text-secondary)] font-medium">
               Voice-First Spatial & Visual Co-Pilot
             </p>
           </div>
