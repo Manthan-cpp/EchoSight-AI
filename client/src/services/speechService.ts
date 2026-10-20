@@ -4,61 +4,33 @@ let recognitionInstance: any = null;
 let isListeningState = false;
 let currentOnCommand: ((transcript: string) => void) | null = null;
 let currentOnInterim: ((interim: string) => void) | null = null;
+let currentOnError: ((err: string) => void) | null = null;
+let currentOnStatusChange: ((isListening: boolean) => void) | null = null;
 let lastProcessedCommand = '';
 let lastProcessedTime = 0;
 
 let currentSpeakingText = '';
 let lastSpokenText = '';
 let lastSpokenTime = 0;
-let lastSpeechEndTime = 0;
 
 export let isEchoSightSpeaking = false;
 
-type SpeechStateListener = (speaking: boolean) => void;
+type SpeechStateListener = (speaking: boolean, text?: string) => void;
 const speechListeners = new Set<SpeechStateListener>();
-
-/**
- * Check if heard transcript is an acoustic feedback echo of EchoSight's own voice from speakers.
- */
-function isSelfEcho(transcript: string): boolean {
-  if (!transcript) return false;
-  const lower = transcript.toLowerCase().trim();
-  if (!lower) return false;
-
-  const isRecent = isEchoSightSpeaking || Date.now() - lastSpeechEndTime < 1500;
-  if (!isRecent) return false;
-
-  const target = (currentSpeakingText || lastSpokenText).toLowerCase();
-  if (!target) return false;
-
-  // Direct substring check
-  if (target.includes(lower)) return true;
-
-  // Word overlap check for acoustic fragments
-  const heardWords = lower.split(/\s+/).filter((w) => w.length > 2);
-  if (heardWords.length > 0) {
-    const matchingWords = heardWords.filter((w) => target.includes(w));
-    if (matchingWords.length / heardWords.length >= 0.6) {
-      return true;
-    }
-  }
-
-  return false;
-}
 
 export function onSpeechStateChange(listener: SpeechStateListener): () => void {
   speechListeners.add(listener);
-  listener(isEchoSightSpeaking);
+  listener(isEchoSightSpeaking, currentSpeakingText);
   return () => {
     speechListeners.delete(listener);
   };
 }
 
-function updateSpeakingState(speaking: boolean): void {
+function updateSpeakingState(speaking: boolean, text: string = ''): void {
   isEchoSightSpeaking = speaking;
   speechListeners.forEach((fn) => {
     try {
-      fn(speaking);
+      fn(speaking, text);
     } catch (err) {
       console.warn('[Speech] Error in speech state listener:', err);
     }
@@ -117,10 +89,10 @@ export function speakText(text: string, onEnd?: () => void): void {
   }
 
   const now = Date.now();
-  // Prevent repeating the same sentence if currently speaking or requested within last 2.5 seconds
+  // Prevent repeating identical sentence if requested within 1.5 seconds
   if (
     cleanText.toLowerCase() === lastSpokenText.toLowerCase() &&
-    (isEchoSightSpeaking || now - lastSpokenTime < 2500)
+    (isEchoSightSpeaking || now - lastSpokenTime < 1500)
   ) {
     console.log('[Speech] Suppressed rapid duplicate speakText:', cleanText);
     return;
@@ -129,15 +101,14 @@ export function speakText(text: string, onEnd?: () => void): void {
   lastSpokenText = cleanText;
   lastSpokenTime = now;
   currentSpeakingText = cleanText;
-  updateSpeakingState(true);
+  updateSpeakingState(true, cleanText);
 
   let hasEnded = false;
   const safeOnEnd = () => {
     if (!hasEnded) {
       hasEnded = true;
       currentSpeakingText = '';
-      lastSpeechEndTime = Date.now();
-      updateSpeakingState(false);
+      updateSpeakingState(false, '');
       onEnd?.();
     }
   };
@@ -145,7 +116,7 @@ export function speakText(text: string, onEnd?: () => void): void {
   const doSpeak = () => {
     try {
       const utterance = new SpeechSynthesisUtterance(cleanText);
-      utterance.rate = 1.0; // Steady walking pace
+      utterance.rate = 1.0;
       utterance.pitch = 1.0;
       utterance.lang = 'en-US';
 
@@ -155,7 +126,7 @@ export function speakText(text: string, onEnd?: () => void): void {
       }
 
       utterance.onstart = () => {
-        updateSpeakingState(true);
+        updateSpeakingState(true, cleanText);
       };
 
       utterance.onend = () => {
@@ -182,7 +153,7 @@ export function speakText(text: string, onEnd?: () => void): void {
     }
   };
 
-  // If already speaking different text, cancel first and wait a brief tick
+  // If already speaking, cancel first and wait a brief tick
   if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
     window.speechSynthesis.cancel();
     setTimeout(doSpeak, 40);
@@ -197,8 +168,7 @@ export function speakText(text: string, onEnd?: () => void): void {
 export function stopSpeaking(): void {
   if (isSpeechSynthesisSupported()) {
     currentSpeakingText = '';
-    lastSpeechEndTime = Date.now();
-    updateSpeakingState(false);
+    updateSpeakingState(false, '');
     window.speechSynthesis.cancel();
   }
 }
@@ -222,6 +192,102 @@ export function updateListeningHandlers(
   currentOnInterim = onInterim || null;
 }
 
+function initRecognition(): any {
+  if (typeof window === 'undefined') return null;
+  const SpeechRecognition =
+    (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+  if (!SpeechRecognition) return null;
+
+  const recognition = new SpeechRecognition();
+  recognition.continuous = true;
+  recognition.interimResults = true;
+
+  const userLang =
+    typeof navigator !== 'undefined' && navigator.language
+      ? navigator.language
+      : 'en-US';
+  recognition.lang = userLang;
+
+  recognition.onresult = (event: any) => {
+    let finalChunk = '';
+    let interimChunk = '';
+
+    for (let i = event.resultIndex; i < event.results.length; ++i) {
+      const item = event.results[i];
+      const text = item[0]?.transcript || '';
+      if (item.isFinal) {
+        finalChunk += text + ' ';
+      } else {
+        interimChunk += text + ' ';
+      }
+    }
+
+    const trimmedFinal = finalChunk.trim();
+    const trimmedInterim = interimChunk.trim();
+    const activeText = trimmedFinal || trimmedInterim;
+
+    // --- INSTANT BARGE-IN INTERRUPTION ---
+    // If user begins speaking, immediately halt AI speech output
+    if (activeText && (window.speechSynthesis?.speaking || isEchoSightSpeaking)) {
+      console.log('[Speech] User speech detected — immediately interrupting system speech!');
+      stopSpeaking();
+    }
+
+    if (trimmedInterim && currentOnInterim) {
+      currentOnInterim(trimmedInterim);
+    }
+
+    if (trimmedFinal) {
+      const now = Date.now();
+
+      // Only reject rapid identical duplicates fired within 800ms
+      if (
+        trimmedFinal.toLowerCase() === lastProcessedCommand.toLowerCase() &&
+        now - lastProcessedTime < 800
+      ) {
+        console.log('[Speech] Ignored duplicate rapid command:', trimmedFinal);
+        return;
+      }
+
+      lastProcessedCommand = trimmedFinal;
+      lastProcessedTime = now;
+
+      console.log('[Speech] Final recognized voice command:', trimmedFinal);
+      currentOnCommand?.(trimmedFinal);
+    }
+  };
+
+  recognition.onerror = (event: any) => {
+    if (event.error !== 'no-speech' && event.error !== 'aborted') {
+      console.warn('[Speech] Recognition error:', event.error);
+      currentOnError?.(`Voice recognition: ${event.error}`);
+    }
+  };
+
+  recognition.onend = () => {
+    if (isListeningState) {
+      setTimeout(() => {
+        if (isListeningState) {
+          try {
+            recognitionInstance?.start();
+          } catch {
+            try {
+              recognitionInstance = initRecognition();
+              recognitionInstance?.start();
+            } catch (err) {
+              console.warn('[Speech] Could not restart recognition:', err);
+            }
+          }
+        }
+      }, 100);
+    } else {
+      currentOnStatusChange?.(false);
+    }
+  };
+
+  return recognition;
+}
+
 /**
  * Start listening for continuous voice input with barge-in interruption.
  */
@@ -232,127 +298,25 @@ export function startListening(
   onInterim?: (interim: string) => void
 ): boolean {
   if (!isSpeechRecognitionSupported()) {
-    onError?.('Speech recognition is not supported in this browser. Please use keyboard or a supported browser.');
+    onError?.('Speech recognition is not supported in this browser.');
     return false;
   }
 
-  // Always update active handlers to prevent stale React closures
   currentOnCommand = onCommand;
   currentOnInterim = onInterim || null;
+  currentOnError = onError || null;
+  currentOnStatusChange = onStatusChange || null;
 
   try {
-    const SpeechRecognition =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-
     if (!recognitionInstance) {
-      recognitionInstance = new SpeechRecognition();
-      recognitionInstance.continuous = true;
-      recognitionInstance.interimResults = true; // Crucial for instant barge-in and real-time recognition
-
-      // Auto-detect browser/user locale for natural recognition across accents
-      const userLang =
-        typeof navigator !== 'undefined' && navigator.language
-          ? navigator.language
-          : 'en-US';
-      recognitionInstance.lang = userLang;
-      console.log('[Speech] Recognition configured for language:', userLang);
-
-      recognitionInstance.onresult = (event: any) => {
-        let finalChunk = '';
-        let interimChunk = '';
-
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          const item = event.results[i];
-          const text = item[0]?.transcript || '';
-          if (item.isFinal) {
-            finalChunk += text + ' ';
-          } else {
-            interimChunk += text + ' ';
-          }
-        }
-
-        const trimmedFinal = finalChunk.trim();
-        const trimmedInterim = interimChunk.trim();
-        const activeText = trimmedFinal || trimmedInterim;
-
-        // --- ACOUSTIC SELF-ECHO SUPPRESSION ---
-        // If the microphone picks up EchoSight's own voice from the speakers, do not interrupt or re-trigger!
-        if (activeText && isSelfEcho(activeText)) {
-          console.log('[Speech] Suppressed acoustic self-echo from speaker:', activeText);
-          return;
-        }
-
-        // --- BARGE-IN INTERRUPTION ---
-        // If the user speaks a real word while EchoSight is talking, immediately silence the system!
-        if (activeText) {
-          if (
-            typeof window !== 'undefined' &&
-            (window.speechSynthesis.speaking || isEchoSightSpeaking)
-          ) {
-            console.log('[Speech] User speech detected — immediately interrupting system voice!');
-            stopSpeaking();
-          }
-        }
-
-        if (trimmedInterim && currentOnInterim) {
-          currentOnInterim(trimmedInterim);
-        }
-
-        if (trimmedFinal) {
-          const now = Date.now();
-
-          // Reject duplicate commands fired within 2.5 seconds
-          const isDuplicate =
-            (trimmedFinal.toLowerCase() === lastProcessedCommand.toLowerCase() ||
-              (lastProcessedCommand &&
-                (trimmedFinal.toLowerCase().includes(lastProcessedCommand.toLowerCase()) ||
-                  lastProcessedCommand.toLowerCase().includes(trimmedFinal.toLowerCase())))) &&
-            now - lastProcessedTime < 2500;
-
-          if (isDuplicate) {
-            console.log('[Speech] Ignored duplicate rapid command:', trimmedFinal);
-            return;
-          }
-
-          lastProcessedCommand = trimmedFinal;
-          lastProcessedTime = now;
-
-          console.log('[Speech] Final recognized voice command:', trimmedFinal);
-          currentOnCommand?.(trimmedFinal);
-        }
-      };
-
-      recognitionInstance.onerror = (event: any) => {
-        // 'no-speech' is a normal timeout between sentences in continuous mode
-        if (event.error !== 'no-speech') {
-          console.warn('[Speech] Recognition error:', event.error);
-          onError?.(`Voice recognition notice: ${event.error}`);
-        }
-      };
-
-      recognitionInstance.onend = () => {
-        // Auto-restart if intended to remain active
-        if (isListeningState) {
-          setTimeout(() => {
-            if (isListeningState && recognitionInstance) {
-              try {
-                recognitionInstance.start();
-              } catch {
-                // Ignore if already started
-              }
-            }
-          }, 150);
-        } else {
-          onStatusChange?.(false);
-        }
-      };
+      recognitionInstance = initRecognition();
     }
 
     isListeningState = true;
     try {
-      recognitionInstance.start();
+      recognitionInstance?.start();
     } catch {
-      // Already running
+      // Already running or starting
     }
     onStatusChange?.(true);
     return true;
