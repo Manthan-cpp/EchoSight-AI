@@ -33,7 +33,17 @@ interface FollowupItem {
   timestamp: string;
 }
 
-export function VisualAnalysis() {
+interface VisualAnalysisProps {
+  isVoiceActive?: boolean;
+  setIsVoiceActive?: (active: boolean) => void;
+  onNavigateTab?: (tab: 'surroundings' | 'analysis') => void;
+}
+
+export function VisualAnalysis({
+  isVoiceActive: isVoiceProp,
+  setIsVoiceActive: setIsVoiceProp,
+  onNavigateTab,
+}: VisualAnalysisProps = {}) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [detectedType, setDetectedType] = useState<DetectedMediaType>('image');
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -41,7 +51,12 @@ export function VisualAnalysis() {
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   const [toolResult, setToolResult] = useState<ToolResult | null>(null);
   const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
-  const [isVoiceListening, setIsVoiceListening] = useState<boolean>(false);
+  const [localVoiceActive, setLocalVoiceActive] = useState<boolean>(isVoiceProp ?? true);
+  const isVoiceListening = isVoiceProp !== undefined ? isVoiceProp : localVoiceActive;
+  const updateVoiceActive = (active: boolean) => {
+    setLocalVoiceActive(active);
+    setIsVoiceProp?.(active);
+  };
   const [interimSpeech, setInterimSpeech] = useState<string>('');
   const [followupText, setFollowupText] = useState<string>('');
   const [isAnsweringFollowup, setIsAnsweringFollowup] = useState<boolean>(false);
@@ -67,6 +82,21 @@ export function VisualAnalysis() {
     contextHistoryRef.current = contextHistory;
     isAnalyzingRef.current = isAnalyzing;
   }, [selectedFile, detectedType, fileBase64, contextHistory, isAnalyzing]);
+
+  // Synchronize continuous voice listening enabled by default
+  useEffect(() => {
+    if (isVoiceListening && isSpeechRecognitionSupported()) {
+      startListening(
+        (transcript) => handleVoiceCommand(transcript),
+        undefined,
+        (err) => setErrorMessage(err),
+        (interim) => handleInterimSpeech(interim)
+      );
+    } else {
+      stopListening();
+      setInterimSpeech('');
+    }
+  }, [isVoiceListening]);
 
   // Synchronize speech state directly from speech service (including instant barge-in interruptions)
   useEffect(() => {
@@ -129,9 +159,7 @@ export function VisualAnalysis() {
   const handleReset = () => {
     narrationSupersededRef.current = true;
     stopSpeaking();
-    stopListening();
     setIsSpeaking(false);
-    setIsVoiceListening(false);
     setSelectedFile(null);
     setDetectedType('image');
     if (previewUrl) URL.revokeObjectURL(previewUrl);
@@ -301,7 +329,37 @@ export function VisualAnalysis() {
     const lower = command.toLowerCase().trim();
     setInterimSpeech('');
 
-    // 1. Stop / Silence commands
+    // 0. Disable voice control triggers
+    if (
+      lower.includes('disable voice') ||
+      lower.includes('turn off voice') ||
+      lower.includes('stop voice control') ||
+      lower.includes('disable voice control') ||
+      lower.includes('stop listening') ||
+      lower.includes('deactivate voice') ||
+      lower.includes('pause voice')
+    ) {
+      updateVoiceActive(false);
+      stopListening();
+      setInterimSpeech('');
+      speakText('Voice control disabled. You can re-enable using the button.');
+      setInterruptionNotice('Voice control disabled by user voice command.');
+      return;
+    }
+
+    // 1. Navigation triggers
+    if (
+      lower.includes('switch to surroundings') ||
+      lower.includes('open surroundings') ||
+      lower.includes('go to surroundings') ||
+      lower.includes('surroundings mode')
+    ) {
+      speakText('Switching to Surroundings Mode.');
+      onNavigateTab?.('surroundings');
+      return;
+    }
+
+    // 2. Stop / Silence audio commands
     if (
       lower.includes('stop') ||
       lower.includes('pause') ||
@@ -318,7 +376,7 @@ export function VisualAnalysis() {
       return;
     }
 
-    // 2. Trigger initial analysis by voice
+    // 3. Trigger initial analysis by voice
     if (
       lower.includes('analyze this') ||
       lower.includes('start analysis') ||
@@ -332,7 +390,7 @@ export function VisualAnalysis() {
       }
     }
 
-    // 3. Any other spoken input is treated as a direct question that interrupts ongoing narration!
+    // 4. Any other spoken input is treated as a direct question that interrupts ongoing narration!
     handleAskFollowup(command);
   };
 
@@ -356,19 +414,13 @@ export function VisualAnalysis() {
    */
   const toggleVoiceControl = () => {
     if (isVoiceListening) {
-      stopListening((listening) => setIsVoiceListening(listening));
-      setIsVoiceListening(false);
+      updateVoiceActive(false);
+      stopListening();
       setInterimSpeech('');
+      speakText('Voice control paused.');
     } else {
-      const started = startListening(
-        (transcript) => handleVoiceCommand(transcript),
-        (listening) => setIsVoiceListening(listening),
-        (err) => setErrorMessage(err),
-        (interim) => handleInterimSpeech(interim)
-      );
-      if (started) {
-        setIsVoiceListening(true);
-      }
+      updateVoiceActive(true);
+      speakText('Voice control active. You can speak commands or questions.');
     }
   };
 

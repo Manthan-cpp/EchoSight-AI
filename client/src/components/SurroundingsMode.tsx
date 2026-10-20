@@ -11,10 +11,25 @@ interface TranscriptItem {
   type: 'observation' | 'followup' | 'system';
 }
 
-export function SurroundingsMode() {
+interface SurroundingsModeProps {
+  isVoiceActive?: boolean;
+  setIsVoiceActive?: (active: boolean) => void;
+  onNavigateTab?: (tab: 'surroundings' | 'analysis') => void;
+}
+
+export function SurroundingsMode({
+  isVoiceActive: isVoiceProp,
+  setIsVoiceActive: setIsVoiceProp,
+  onNavigateTab,
+}: SurroundingsModeProps = {}) {
   const [isWatching, setIsWatching] = useState<boolean>(false);
   const [isCameraActive, setIsCameraActive] = useState<boolean>(false);
-  const [isVoiceActive, setIsVoiceActive] = useState<boolean>(false);
+  const [localVoiceActive, setLocalVoiceActive] = useState<boolean>(isVoiceProp ?? true);
+  const isVoiceActive = isVoiceProp !== undefined ? isVoiceProp : localVoiceActive;
+  const updateVoiceActive = (active: boolean) => {
+    setLocalVoiceActive(active);
+    setIsVoiceProp?.(active);
+  };
   const [isAnalyzingFrame, setIsAnalyzingFrame] = useState<boolean>(false);
   const [cadenceSeconds] = useState<number>(5);
   const [sessionSeconds, setSessionSeconds] = useState<number>(0);
@@ -40,6 +55,21 @@ export function SurroundingsMode() {
   useEffect(() => {
     isWatchingRef.current = isWatching;
   }, [isWatching]);
+
+  // Synchronize continuous voice listening enabled by default
+  useEffect(() => {
+    if (isVoiceActive && isSpeechRecognitionSupported()) {
+      startListening(
+        (transcript) => handleVoiceCommand(transcript),
+        undefined,
+        (err) => addTranscript(err, 'system'),
+        (interim) => setInterimSpeech(interim)
+      );
+    } else {
+      stopListening();
+      setInterimSpeech('');
+    }
+  }, [isVoiceActive]);
 
   // Scroll transcript to bottom as updates arrive
   useEffect(() => {
@@ -375,7 +405,37 @@ export function SurroundingsMode() {
     setInterimSpeech('');
     addTranscript(`Heard: "${command}"`, 'followup');
 
-    // 1. Stop control triggers
+    // 0. Disable voice control triggers
+    if (
+      lower.includes('disable voice') ||
+      lower.includes('turn off voice') ||
+      lower.includes('stop voice control') ||
+      lower.includes('disable voice control') ||
+      lower.includes('stop listening') ||
+      lower.includes('deactivate voice') ||
+      lower.includes('pause voice')
+    ) {
+      updateVoiceActive(false);
+      stopListening();
+      setInterimSpeech('');
+      speakText('Voice control disabled. Tap the button to re-enable anytime.');
+      addTranscript('Voice control disabled by voice command.', 'system');
+      return;
+    }
+
+    // 1. Navigation triggers
+    if (
+      lower.includes('switch to visual analysis') ||
+      lower.includes('open visual analysis') ||
+      lower.includes('go to visual analysis') ||
+      lower.includes('visual analysis')
+    ) {
+      speakText('Switching to Visual Analysis.');
+      onNavigateTab?.('analysis');
+      return;
+    }
+
+    // 2. Stop camera watching triggers
     if (
       lower.includes('stop') ||
       lower.includes('pause') ||
@@ -389,7 +449,7 @@ export function SurroundingsMode() {
       return;
     }
 
-    // 2. Start control triggers (use ref to avoid stale closure)
+    // 3. Start control triggers (use ref to avoid stale closure)
     if (
       lower.includes('start surroundings') ||
       lower.includes('describe surroundings') ||
@@ -404,7 +464,7 @@ export function SurroundingsMode() {
       return;
     }
 
-    // 3. Exhaustive detail drill-down on request
+    // 4. Exhaustive detail drill-down on request
     if (
       lower.includes('tell me everything') ||
       lower.includes('more detail') ||
@@ -418,25 +478,19 @@ export function SurroundingsMode() {
       return;
     }
 
-    // 4. Any other speech is treated as a direct question
+    // 5. Any other speech is treated as a direct question
     await executeFollowupQuery(command);
   };
 
   const toggleVoiceControl = () => {
     if (isVoiceActive) {
-      stopListening(setIsVoiceActive);
+      updateVoiceActive(false);
+      stopListening();
       setInterimSpeech('');
       speakText('Voice control paused.');
     } else {
-      const started = startListening(
-        (transcript) => handleVoiceCommand(transcript),
-        setIsVoiceActive,
-        (err) => addTranscript(err, 'system'),
-        (interim) => setInterimSpeech(interim)
-      );
-      if (started) {
-        speakText('Voice control active. You can speak commands or questions.');
-      }
+      updateVoiceActive(true);
+      speakText('Voice control active. You can speak commands or questions.');
     }
   };
 

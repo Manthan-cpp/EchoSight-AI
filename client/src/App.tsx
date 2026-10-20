@@ -7,12 +7,12 @@ import {
   speakText,
   stopSpeaking,
   startListening,
-  stopListening,
   isSpeechRecognitionSupported,
 } from './services/speechService';
 
 export function App() {
   const [hasEntered, setHasEntered] = useState<boolean>(false);
+  const [isVoiceEnabled, setIsVoiceEnabled] = useState<boolean>(true);
   const [isListeningForEnter, setIsListeningForEnter] = useState<boolean>(false);
   const [currentTab, setCurrentTab] = useState<'surroundings' | 'analysis'>('surroundings');
   const [isDark, setIsDark] = useState<boolean>(false);
@@ -29,11 +29,11 @@ export function App() {
   }, [isDark]);
 
   const handleEnter = () => {
+    if (hasEntered) return;
     setHasEntered(true);
     stopSpeaking();
-    stopListening();
     setCurrentTab('surroundings');
-    const msg = 'Entering Surroundings Mode.';
+    const msg = 'Entering Surroundings Mode. Voice control is active.';
     setSpokenAlert(msg);
     speakText(msg);
   };
@@ -77,10 +77,6 @@ export function App() {
         }
       }
     }
-
-    return () => {
-      stopListening();
-    };
   }, [hasEntered]);
 
   // Keyboard accessibility for landing gate (Enter or Space key)
@@ -172,8 +168,20 @@ export function App() {
 
       {/* Main Content Surface */}
       <main className="flex-1 px-4 py-6 max-w-4xl mx-auto w-full">
-        {currentTab === 'surroundings' && <SurroundingsMode />}
-        {currentTab === 'analysis' && <VisualAnalysis />}
+        {currentTab === 'surroundings' && (
+          <SurroundingsMode
+            isVoiceActive={isVoiceEnabled}
+            setIsVoiceActive={setIsVoiceEnabled}
+            onNavigateTab={setCurrentTab}
+          />
+        )}
+        {currentTab === 'analysis' && (
+          <VisualAnalysis
+            isVoiceActive={isVoiceEnabled}
+            setIsVoiceActive={setIsVoiceEnabled}
+            onNavigateTab={setCurrentTab}
+          />
+        )}
       </main>
 
       {/* Calm, Accessible Footer */}
