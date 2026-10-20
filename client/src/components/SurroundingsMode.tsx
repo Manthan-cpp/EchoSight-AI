@@ -525,6 +525,7 @@ export function SurroundingsMode({
 
     // 0. Disable voice control triggers
     if (isDisableVoiceCommand(lower)) {
+      markCommandHandled(command);
       updateVoiceActive(false);
       stopListening();
       setInterimSpeech('');
@@ -535,6 +536,7 @@ export function SurroundingsMode({
 
     // 1. Navigation triggers (Visual & Video Analysis Tab)
     if (isNavigateToAnalysisCommand(lower)) {
+      markCommandHandled(command);
       if (isWatchingRef.current) {
         stopWatchingInternal();
       }
@@ -546,6 +548,7 @@ export function SurroundingsMode({
 
     // 2. Stop camera watching triggers
     if (isStopCommand(lower)) {
+      markCommandHandled(command);
       if (isWatchingRef.current) {
         stopWatching();
       }
@@ -554,6 +557,7 @@ export function SurroundingsMode({
 
     // 3. Start control triggers (robust match for 'start surroundings mode', 'start surrounding', etc.)
     if (isStartCommand(lower)) {
+      markCommandHandled(command);
       if (!isWatchingRef.current) {
         startWatching();
       }

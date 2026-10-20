@@ -77,6 +77,7 @@ export function VisualAnalysis({
   const contextHistoryRef = useRef<string>('');
   const isAnalyzingRef = useRef<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const isCapturingPhotoRef = useRef<boolean>(false);
 
   // Keep state refs synchronized to eliminate stale closures in speech callbacks
   useEffect(() => {
@@ -162,6 +163,7 @@ export function VisualAnalysis({
       const isVideo = file.type.startsWith('video/') || /\.(mp4|webm|mov)$/i.test(file.name);
       const mediaType: DetectedMediaType = isVideo ? 'video' : 'image';
 
+      setIsAwaitingFileTap(false);
       setSelectedFile(file);
       setDetectedType(mediaType);
       detectedTypeRef.current = mediaType;
@@ -178,11 +180,16 @@ export function VisualAnalysis({
       // Read file as base64
       try {
         const base64 = await readFileAsBase64(file);
+        fileBase64Ref.current = base64;
         setFileBase64(base64);
         speakText(`${file.name} selected. Say "analyze this" to begin.`);
       } catch (err: any) {
         setErrorMessage('Failed to read file: ' + err.message);
       }
+    }
+    // Reset file input value so selecting the same file again triggers change
+    if (e.target) {
+      e.target.value = '';
     }
   };
 
@@ -202,6 +209,17 @@ export function VisualAnalysis({
   const triggerFilePicker = () => {
     setInterimSpeech('');
     stopSpeaking();
+
+    // If already waiting for file tap/enter, do not re-announce or duplicate
+    if (isAwaitingFileTap) {
+      try {
+        fileInputRef.current?.click();
+      } catch (e) {
+        console.warn('[VisualAnalysis] Direct input click blocked by browser:', e);
+      }
+      return;
+    }
+
     setIsAwaitingFileTap(true);
 
     try {
@@ -214,6 +232,9 @@ export function VisualAnalysis({
   };
 
   const handleCapturePhotoFromCamera = async () => {
+    if (isCapturingPhotoRef.current) return;
+    isCapturingPhotoRef.current = true;
+
     stopSpeaking();
     speakText('Accessing camera. Please hold your document or object steady...');
     try {
@@ -240,25 +261,30 @@ export function VisualAnalysis({
       stream.getTracks().forEach((track) => track.stop());
 
       canvas.toBlob(async (blob) => {
-        if (!blob) return;
-        const file = new File([blob], `camera-photo-${Date.now()}.jpg`, { type: 'image/jpeg' });
-        setSelectedFile(file);
-        setDetectedType('image');
-        setPreviewUrl(URL.createObjectURL(file));
-        setToolResult(null);
-        setFollowups([]);
-        setContextHistory('');
-        setErrorMessage(null);
-        setInterruptionNotice(null);
-        setIsAwaitingFileTap(false);
+        try {
+          if (!blob) return;
+          const file = new File([blob], `camera-photo-${Date.now()}.jpg`, { type: 'image/jpeg' });
+          setSelectedFile(file);
+          setDetectedType('image');
+          setPreviewUrl(URL.createObjectURL(file));
+          setToolResult(null);
+          setFollowups([]);
+          setContextHistory('');
+          setErrorMessage(null);
+          setInterruptionNotice(null);
+          setIsAwaitingFileTap(false);
 
-        const base64 = await readFileAsBase64(file);
-        fileBase64Ref.current = base64;
-        setFileBase64(base64);
+          const base64 = await readFileAsBase64(file);
+          fileBase64Ref.current = base64;
+          setFileBase64(base64);
 
-        speakText('Photo captured from camera. Say "analyze this" to begin exhaustive analysis.');
+          speakText('Photo captured from camera. Say "analyze this" to begin exhaustive analysis.');
+        } finally {
+          isCapturingPhotoRef.current = false;
+        }
       }, 'image/jpeg', 0.85);
     } catch (err: any) {
+      isCapturingPhotoRef.current = false;
       console.warn('[VisualAnalysis] Camera capture failed:', err);
       speakText('Could not access camera. Please choose a file instead.');
     }
@@ -475,6 +501,9 @@ export function VisualAnalysis({
     const lower = command.toLowerCase().trim();
     setInterimSpeech('');
 
+    // Safety: ignore empty or residual entrance tokens
+    if (!lower || lower === 'enter' || lower === 'inter') return;
+
     // 0. Disable voice control triggers
     if (
       lower.includes('disable voice') ||
@@ -485,6 +514,7 @@ export function VisualAnalysis({
       lower.includes('deactivate voice') ||
       lower.includes('pause voice')
     ) {
+      markCommandHandled(command);
       updateVoiceActive(false);
       stopListening();
       setInterimSpeech('');
@@ -495,18 +525,21 @@ export function VisualAnalysis({
 
     // 1. Camera snap command by voice (live capture without file picker dialog)
     if (isCameraCaptureCommand(lower)) {
+      markCommandHandled(command);
       handleCapturePhotoFromCamera();
       return;
     }
 
     // 2. File selection by voice ("I want to analyze an image/video", "open file picker", "upload file")
     if (isFileUploadCommand(lower)) {
+      markCommandHandled(command);
       triggerFilePicker();
       return;
     }
 
     // 3. Navigation triggers (Surroundings Mode Tab)
     if (isNavigateToSurroundingsCommand(lower)) {
+      markCommandHandled(command);
       narrationSupersededRef.current = true;
       stopSpeaking();
       setIsSpeaking(false);
@@ -525,6 +558,7 @@ export function VisualAnalysis({
       lower.includes('be quiet') ||
       lower.includes('silence')
     ) {
+      markCommandHandled(command);
       narrationSupersededRef.current = true;
       stopSpeaking();
       setIsSpeaking(false);
@@ -541,6 +575,7 @@ export function VisualAnalysis({
       lower.includes('read this')
     ) {
       if (fileBase64Ref.current && !isAnalyzingRef.current) {
+        markCommandHandled(command);
         handleRunAnalysis();
         return;
       }
@@ -551,26 +586,18 @@ export function VisualAnalysis({
   };
 
   /**
-   * Interim speech callback: interrupts speech on the very first syllable spoken by the user!
+   * Interim speech callback: handles instant barge-in and fast navigation.
    */
   const handleInterimSpeech = (interim: string) => {
     setInterimSpeech(interim);
     const lower = interim.toLowerCase().trim();
 
-    // Fast-path: Interim camera snap
-    if (isCameraCaptureCommand(lower)) {
-      console.log('[VisualAnalysis] Fast interim camera snap trigger:', lower);
-      markCommandHandled(lower);
-      handleCapturePhotoFromCamera();
-      return;
-    }
-
-    // Fast-path: Interim file selection trigger
-    if (isFileUploadCommand(lower)) {
-      console.log('[VisualAnalysis] Fast interim file upload trigger:', lower);
-      markCommandHandled(lower);
-      triggerFilePicker();
-      return;
+    // Instant barge-in: If user speaks ANY word while EchoSight is narrating, silence system voice immediately
+    if (interim.trim() && (window.speechSynthesis?.speaking || isEchoSightSpeaking)) {
+      narrationSupersededRef.current = true;
+      stopSpeaking();
+      setIsSpeaking(false);
+      setInterruptionNotice('Interrupted: listening to your question...');
     }
 
     // Fast-path: Interim navigation to Surroundings Mode
@@ -584,14 +611,6 @@ export function VisualAnalysis({
       speakText('Switching to Surroundings Mode. Say "start surroundings" to begin.');
       onNavigateTab?.('surroundings');
       return;
-    }
-
-    // Instant barge-in: If user speaks ANY word while EchoSight is narrating, silence system voice immediately
-    if (interim.trim() && (window.speechSynthesis?.speaking || isEchoSightSpeaking)) {
-      narrationSupersededRef.current = true;
-      stopSpeaking();
-      setIsSpeaking(false);
-      setInterruptionNotice('Interrupted: listening to your question...');
     }
   };
 

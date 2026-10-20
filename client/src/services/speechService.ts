@@ -7,10 +7,44 @@ let currentOnInterim: ((interim: string) => void) | null = null;
 let lastProcessedCommand = '';
 let lastProcessedTime = 0;
 
+let currentSpeakingText = '';
+let lastSpokenText = '';
+let lastSpokenTime = 0;
+let lastSpeechEndTime = 0;
+
 export let isEchoSightSpeaking = false;
 
 type SpeechStateListener = (speaking: boolean) => void;
 const speechListeners = new Set<SpeechStateListener>();
+
+/**
+ * Check if heard transcript is an acoustic feedback echo of EchoSight's own voice from speakers.
+ */
+function isSelfEcho(transcript: string): boolean {
+  if (!transcript) return false;
+  const lower = transcript.toLowerCase().trim();
+  if (!lower) return false;
+
+  const isRecent = isEchoSightSpeaking || Date.now() - lastSpeechEndTime < 1500;
+  if (!isRecent) return false;
+
+  const target = (currentSpeakingText || lastSpokenText).toLowerCase();
+  if (!target) return false;
+
+  // Direct substring check
+  if (target.includes(lower)) return true;
+
+  // Word overlap check for acoustic fragments
+  const heardWords = lower.split(/\s+/).filter((w) => w.length > 2);
+  if (heardWords.length > 0) {
+    const matchingWords = heardWords.filter((w) => target.includes(w));
+    if (matchingWords.length / heardWords.length >= 0.6) {
+      return true;
+    }
+  }
+
+  return false;
+}
 
 export function onSpeechStateChange(listener: SpeechStateListener): () => void {
   speechListeners.add(listener);
@@ -82,10 +116,27 @@ export function speakText(text: string, onEnd?: () => void): void {
     return;
   }
 
+  const now = Date.now();
+  // Prevent repeating the same sentence if currently speaking or requested within last 2.5 seconds
+  if (
+    cleanText.toLowerCase() === lastSpokenText.toLowerCase() &&
+    (isEchoSightSpeaking || now - lastSpokenTime < 2500)
+  ) {
+    console.log('[Speech] Suppressed rapid duplicate speakText:', cleanText);
+    return;
+  }
+
+  lastSpokenText = cleanText;
+  lastSpokenTime = now;
+  currentSpeakingText = cleanText;
+  updateSpeakingState(true);
+
   let hasEnded = false;
   const safeOnEnd = () => {
     if (!hasEnded) {
       hasEnded = true;
+      currentSpeakingText = '';
+      lastSpeechEndTime = Date.now();
       updateSpeakingState(false);
       onEnd?.();
     }
@@ -131,7 +182,7 @@ export function speakText(text: string, onEnd?: () => void): void {
     }
   };
 
-  // If already speaking, cancel first and wait a brief tick to avoid Chrome's cancel-speak collision bug
+  // If already speaking different text, cancel first and wait a brief tick
   if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
     window.speechSynthesis.cancel();
     setTimeout(doSpeak, 40);
@@ -145,6 +196,8 @@ export function speakText(text: string, onEnd?: () => void): void {
  */
 export function stopSpeaking(): void {
   if (isSpeechSynthesisSupported()) {
+    currentSpeakingText = '';
+    lastSpeechEndTime = Date.now();
     updateSpeakingState(false);
     window.speechSynthesis.cancel();
   }
@@ -220,10 +273,18 @@ export function startListening(
 
         const trimmedFinal = finalChunk.trim();
         const trimmedInterim = interimChunk.trim();
+        const activeText = trimmedFinal || trimmedInterim;
+
+        // --- ACOUSTIC SELF-ECHO SUPPRESSION ---
+        // If the microphone picks up EchoSight's own voice from the speakers, do not interrupt or re-trigger!
+        if (activeText && isSelfEcho(activeText)) {
+          console.log('[Speech] Suppressed acoustic self-echo from speaker:', activeText);
+          return;
+        }
 
         // --- BARGE-IN INTERRUPTION ---
-        // If the user speaks ANY word while EchoSight is talking, immediately silence the system!
-        if (trimmedFinal || trimmedInterim) {
+        // If the user speaks a real word while EchoSight is talking, immediately silence the system!
+        if (activeText) {
           if (
             typeof window !== 'undefined' &&
             (window.speechSynthesis.speaking || isEchoSightSpeaking)
@@ -241,10 +302,14 @@ export function startListening(
           const now = Date.now();
 
           // Reject duplicate commands fired within 2.5 seconds
-          if (
-            trimmedFinal.toLowerCase() === lastProcessedCommand.toLowerCase() &&
-            now - lastProcessedTime < 2500
-          ) {
+          const isDuplicate =
+            (trimmedFinal.toLowerCase() === lastProcessedCommand.toLowerCase() ||
+              (lastProcessedCommand &&
+                (trimmedFinal.toLowerCase().includes(lastProcessedCommand.toLowerCase()) ||
+                  lastProcessedCommand.toLowerCase().includes(trimmedFinal.toLowerCase())))) &&
+            now - lastProcessedTime < 2500;
+
+          if (isDuplicate) {
             console.log('[Speech] Ignored duplicate rapid command:', trimmedFinal);
             return;
           }
