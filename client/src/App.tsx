@@ -2,11 +2,9 @@ import { useState, useEffect } from 'react';
 import { Navbar } from './components/Navbar';
 import { SurroundingsMode } from './components/SurroundingsMode';
 import { VisualAnalysis } from './components/VisualAnalysis';
-import { StatesPreview } from './components/StatesPreview';
-import { ContrastAudit } from './components/ContrastAudit';
 
 export function App() {
-  const [currentTab, setCurrentTab] = useState<'surroundings' | 'analysis' | 'states' | 'contrast'>('surroundings');
+  const [currentTab, setCurrentTab] = useState<'surroundings' | 'analysis'>('surroundings');
   const [isDark, setIsDark] = useState<boolean>(false);
   const [spokenAlert, setSpokenAlert] = useState<string>('');
 
@@ -51,8 +49,6 @@ export function App() {
       <main className="flex-1 px-4 py-6 max-w-4xl mx-auto w-full">
         {currentTab === 'surroundings' && <SurroundingsMode />}
         {currentTab === 'analysis' && <VisualAnalysis />}
-        {currentTab === 'states' && <StatesPreview />}
-        {currentTab === 'contrast' && <ContrastAudit />}
       </main>
 
       {/* Calm, Accessible Footer */}

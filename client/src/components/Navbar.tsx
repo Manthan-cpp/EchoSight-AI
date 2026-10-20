@@ -1,8 +1,8 @@
 import { Eye, Sun, Moon, Volume2 } from 'lucide-react';
 
 interface NavbarProps {
-  currentTab: 'surroundings' | 'analysis' | 'states' | 'contrast';
-  setCurrentTab: (tab: 'surroundings' | 'analysis' | 'states' | 'contrast') => void;
+  currentTab: 'surroundings' | 'analysis';
+  setCurrentTab: (tab: 'surroundings' | 'analysis') => void;
   isDark: boolean;
   setIsDark: (dark: boolean) => void;
   onSpeakGreeting: () => void;
@@ -56,28 +56,6 @@ export function Navbar({
             aria-current={currentTab === 'analysis' ? 'page' : undefined}
           >
             Visual Analysis
-          </button>
-          <button
-            onClick={() => setCurrentTab('states')}
-            className={`px-3 py-1.5 text-sm font-medium rounded-[var(--radius-sm)] border transition-colors ${
-              currentTab === 'states'
-                ? 'bg-[var(--accent-primary)] text-[var(--accent-text)] border-[var(--accent-primary)]'
-                : 'bg-[var(--bg-surface)] text-[var(--text-primary)] border-[var(--border-neutral)] hover:bg-[var(--bg-subtle)]'
-            }`}
-            aria-current={currentTab === 'states' ? 'page' : undefined}
-          >
-            UI States
-          </button>
-          <button
-            onClick={() => setCurrentTab('contrast')}
-            className={`px-3 py-1.5 text-sm font-medium rounded-[var(--radius-sm)] border transition-colors ${
-              currentTab === 'contrast'
-                ? 'bg-[var(--accent-primary)] text-[var(--accent-text)] border-[var(--accent-primary)]'
-                : 'bg-[var(--bg-surface)] text-[var(--text-primary)] border-[var(--border-neutral)] hover:bg-[var(--bg-subtle)]'
-            }`}
-            aria-current={currentTab === 'contrast' ? 'page' : undefined}
-          >
-            WCAG Audit
           </button>
         </nav>
 
