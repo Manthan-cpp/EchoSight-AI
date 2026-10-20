@@ -25,13 +25,17 @@ export function SurroundingsMode() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
-  const intervalRef = useRef<any>(null);
+
+  // Synchronization and concurrency locks
+  const isWatchingRef = useRef<boolean>(false);
+  const isProcessingRef = useRef<boolean>(false);
+  const sessionIdRef = useRef<number>(0);
+  const cadenceTimerRef = useRef<any>(null);
   const sessionTimerRef = useRef<any>(null);
   const prevFrameRef = useRef<string | null>(null);
   const priorContextRef = useRef<string>('');
-  const isWatchingRef = useRef<boolean>(false);
 
-  // Keep ref in sync for interval callbacks
+  // Keep ref in sync for callbacks
   useEffect(() => {
     isWatchingRef.current = isWatching;
   }, [isWatching]);
@@ -52,7 +56,7 @@ export function SurroundingsMode() {
 
   const addTranscript = (text: string, type: 'observation' | 'followup' | 'system') => {
     const newItem: TranscriptItem = {
-      id: Date.now().toString(),
+      id: `${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
       text,
       type,
@@ -82,25 +86,67 @@ export function SurroundingsMode() {
   };
 
   /**
-   * The 5-second cadence cycle: captures frame and calls describe_surroundings MCP tool.
+   * Wait for video stream to actually render non-zero pixels.
    */
-  const processCadenceCycle = async () => {
-    if (!isWatchingRef.current) return;
+  const waitForCameraReady = (maxWaitMs = 3000): Promise<boolean> => {
+    return new Promise((resolve) => {
+      const startTime = Date.now();
+      const check = () => {
+        if (!isWatchingRef.current) {
+          resolve(false);
+          return;
+        }
+        if (videoRef.current && videoRef.current.videoWidth > 0 && videoRef.current.videoHeight > 0) {
+          resolve(true);
+        } else if (Date.now() - startTime > maxWaitMs) {
+          resolve(false);
+        } else {
+          setTimeout(check, 100);
+        }
+      };
+      check();
+    });
+  };
+
+  /**
+   * The sequential cadence loop: guarantees zero concurrent calls to Gemini.
+   * Only schedules the next call 5 seconds AFTER the current call completely finishes.
+   */
+  const processCadenceCycle = async (currentSessionId: number) => {
+    // Session validation guards
+    if (!isWatchingRef.current || currentSessionId !== sessionIdRef.current) {
+      return;
+    }
+
+    // Concurrency lock: If a follow-up or another cycle is active, recheck in 1s
+    if (isProcessingRef.current) {
+      cadenceTimerRef.current = setTimeout(() => processCadenceCycle(currentSessionId), 1000);
+      return;
+    }
 
     const currentFrameBase64 = captureFrameBase64();
     if (!currentFrameBase64) {
-      console.log('[Surroundings] Video frame not ready yet, skipping cycle.');
+      console.log('[Surroundings] Video frame not ready yet, retrying in 400ms.');
+      cadenceTimerRef.current = setTimeout(() => processCadenceCycle(currentSessionId), 400);
       return;
     }
 
     try {
+      isProcessingRef.current = true;
       setIsAnalyzingFrame(true);
+
       const result = await callTool('describe_surroundings', {
         image_base64: currentFrameBase64,
         mime_type: 'image/jpeg',
         prior_context: priorContextRef.current,
         prev_frame_base64: prevFrameRef.current,
       });
+
+      // Post-await session validity check: discard if user stopped while request was in-flight
+      if (!isWatchingRef.current || currentSessionId !== sessionIdRef.current) {
+        console.log('[Surroundings] Session ended while request was in flight. Discarding stale response.');
+        return;
+      }
 
       if (result.isUnchanged) {
         console.log('[Surroundings] Scene is static; frame difference below threshold.');
@@ -115,7 +161,16 @@ export function SurroundingsMode() {
     } catch (err: any) {
       console.warn('[Surroundings] Cycle processing error:', err.message);
     } finally {
+      isProcessingRef.current = false;
       setIsAnalyzingFrame(false);
+
+      // Only schedule the NEXT cycle 5 seconds after this cycle has finished!
+      if (isWatchingRef.current && currentSessionId === sessionIdRef.current) {
+        cadenceTimerRef.current = setTimeout(
+          () => processCadenceCycle(currentSessionId),
+          cadenceSeconds * 1000
+        );
+      }
     }
   };
 
@@ -138,8 +193,14 @@ export function SurroundingsMode() {
    * Start Surroundings Mode.
    */
   const startWatching = async () => {
+    // If already watching or cleaning up, stop first
+    stopWatchingInternal();
+
+    const currentSessionId = ++sessionIdRef.current;
     setIsWatching(true);
-    addTranscript('Starting Surroundings Mode. Initializing camera and voice stream...', 'system');
+    isWatchingRef.current = true;
+
+    addTranscript('Starting Surroundings Mode. Initializing camera...', 'system');
     speakText('Starting Surroundings Mode. Point your camera forward.');
 
     try {
@@ -148,16 +209,20 @@ export function SurroundingsMode() {
         audio: false,
       });
 
+      // Check if session was cancelled while awaiting getUserMedia
+      if (!isWatchingRef.current || currentSessionId !== sessionIdRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
         setIsCameraActive(true);
       }
 
-      addTranscript('Camera active. Analyzing surroundings every 5 seconds.', 'system');
-
+      // Initialize session timer
       setSessionSeconds(0);
-      if (sessionTimerRef.current) clearInterval(sessionTimerRef.current);
       sessionTimerRef.current = setInterval(() => {
         setSessionSeconds((prev) => {
           if (prev + 1 >= MAX_SESSION_SECONDS) {
@@ -168,9 +233,16 @@ export function SurroundingsMode() {
         });
       }, 1000);
 
-      // Run initial check after 1.5 seconds, then every 5 seconds
-      setTimeout(processCadenceCycle, 1500);
-      intervalRef.current = setInterval(processCadenceCycle, cadenceSeconds * 1000);
+      // Wait for camera video dimensions to be ready (takes ~200-400ms)
+      const isReady = await waitForCameraReady(3000);
+      if (!isReady || currentSessionId !== sessionIdRef.current) {
+        console.warn('[Surroundings] Video frame timed out or cancelled during startup.');
+      } else {
+        addTranscript('Camera active. Analyzing surroundings every 5 seconds.', 'system');
+      }
+
+      // Fire initial analysis immediately as soon as camera is ready!
+      processCadenceCycle(currentSessionId);
     } catch (err: any) {
       console.warn('[Surroundings] Camera error:', err);
       setIsCameraActive(false);
@@ -179,7 +251,7 @@ export function SurroundingsMode() {
         'system'
       );
       speakText('Camera permission not granted. Please allow camera access.');
-      setIsWatching(false);
+      stopWatchingInternal();
     }
   };
 
@@ -187,18 +259,21 @@ export function SurroundingsMode() {
    * Stop Surroundings Mode cleanly.
    */
   const stopWatchingInternal = () => {
+    sessionIdRef.current++; // Invalidates all pending asynchronous tool responses
     setIsWatching(false);
+    isWatchingRef.current = false;
     setIsCameraActive(false);
     setIsAnalyzingFrame(false);
+    isProcessingRef.current = false;
 
     if (sessionTimerRef.current) {
       clearInterval(sessionTimerRef.current);
       sessionTimerRef.current = null;
     }
 
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
+    if (cadenceTimerRef.current) {
+      clearTimeout(cadenceTimerRef.current);
+      cadenceTimerRef.current = null;
     }
 
     if (videoRef.current && videoRef.current.srcObject) {
@@ -218,7 +293,7 @@ export function SurroundingsMode() {
   };
 
   const toggleWatching = () => {
-    if (isWatching) {
+    if (isWatchingRef.current) {
       stopWatching();
     } else {
       startWatching();
@@ -226,60 +301,25 @@ export function SurroundingsMode() {
   };
 
   /**
-   * Handle Voice Recognition Commands.
+   * Execute follow-up query while pausing background cadence loop.
    */
-  const handleVoiceCommand = async (command: string) => {
-    const lower = command.toLowerCase();
-    addTranscript(`Heard voice command: "${command}"`, 'followup');
-
-    // Check for control triggers
-    if (lower.includes('stop') || lower.includes("that's enough") || lower.includes('pause')) {
-      stopWatching();
-      return;
+  const executeFollowupQuery = async (question: string) => {
+    // 1. Temporarily pause any scheduled cadence cycle
+    if (cadenceTimerRef.current) {
+      clearTimeout(cadenceTimerRef.current);
+      cadenceTimerRef.current = null;
     }
 
-    if (lower.includes('start surroundings') || lower.includes('describe surroundings') || lower.includes('start watching')) {
-      if (!isWatching) {
-        startWatching();
-      }
-      return;
-    }
-
-    // Exhaustive detail drill-down on request
-    if (
-      lower.includes('tell me everything') ||
-      lower.includes('more detail') ||
-      lower.includes('all details') ||
-      lower.includes('exhaustive')
-    ) {
-      stopSpeaking();
-      addTranscript('Requesting exhaustive spatial breakdown...', 'system');
-      try {
-        const currentFrame = captureFrameBase64();
-        const result = await callTool('ask_followup', {
-          question:
-            'Please describe everything in the current view in exhaustive, patient, line-by-line detail, including spatial positioning, textures, objects, and any navigation obstacles.',
-          prior_context: priorContextRef.current,
-          image_base64: currentFrame || undefined,
-          mime_type: currentFrame ? 'image/jpeg' : undefined,
-        });
-        addTranscript(result.spokenText, 'observation');
-        speakText(result.spokenText);
-      } catch (err: any) {
-        addTranscript(`Could not resolve detail request: ${err.message}`, 'system');
-        speakText('Sorry, I had trouble retrieving exhaustive details.');
-      }
-      return;
-    }
-
-    // Otherwise, treat as an interrupting follow-up question
     stopSpeaking();
-    addTranscript(`Asking: "${command}"...`, 'system');
+    addTranscript(`Asking: "${question}"...`, 'system');
 
     try {
+      isProcessingRef.current = true;
+      setIsAnalyzingFrame(true);
+
       const currentFrame = captureFrameBase64();
       const result = await callTool('ask_followup', {
-        question: command,
+        question,
         prior_context: priorContextRef.current,
         image_base64: currentFrame || undefined,
         mime_type: currentFrame ? 'image/jpeg' : undefined,
@@ -290,7 +330,60 @@ export function SurroundingsMode() {
     } catch (err: any) {
       addTranscript(`Could not resolve question: ${err.message}`, 'system');
       speakText('Sorry, I had trouble answering that.');
+    } finally {
+      isProcessingRef.current = false;
+      setIsAnalyzingFrame(false);
+
+      // Resume regular cadence 5 seconds after answering
+      if (isWatchingRef.current) {
+        cadenceTimerRef.current = setTimeout(
+          () => processCadenceCycle(sessionIdRef.current),
+          cadenceSeconds * 1000
+        );
+      }
     }
+  };
+
+  /**
+   * Handle Voice Recognition Commands.
+   */
+  const handleVoiceCommand = async (command: string) => {
+    const lower = command.toLowerCase().trim();
+    addTranscript(`Heard voice command: "${command}"`, 'followup');
+
+    // 1. Stop control triggers
+    if (lower.includes('stop') || lower.includes("that's enough") || lower.includes('pause')) {
+      stopWatching();
+      return;
+    }
+
+    // 2. Start control triggers (use ref to avoid stale closure)
+    if (
+      lower.includes('start surroundings') ||
+      lower.includes('describe surroundings') ||
+      lower.includes('start watching')
+    ) {
+      if (!isWatchingRef.current) {
+        startWatching();
+      }
+      return;
+    }
+
+    // 3. Exhaustive detail drill-down on request
+    if (
+      lower.includes('tell me everything') ||
+      lower.includes('more detail') ||
+      lower.includes('all details') ||
+      lower.includes('exhaustive')
+    ) {
+      await executeFollowupQuery(
+        'Please describe everything in the current view in exhaustive, patient, line-by-line detail, including spatial positioning, textures, objects, and any navigation obstacles.'
+      );
+      return;
+    }
+
+    // 4. Standard interrupting follow-up question
+    await executeFollowupQuery(command);
   };
 
   const toggleVoiceControl = () => {
@@ -319,23 +412,8 @@ export function SurroundingsMode() {
     const question = followupText.trim();
     setFollowupText('');
     addTranscript(`You asked: "${question}"`, 'followup');
-    stopSpeaking();
 
-    try {
-      const currentFrame = captureFrameBase64();
-      const result = await callTool('ask_followup', {
-        question,
-        prior_context: priorContextRef.current,
-        image_base64: currentFrame || undefined,
-        mime_type: currentFrame ? 'image/jpeg' : undefined,
-      });
-
-      addTranscript(result.spokenText, 'observation');
-      speakText(result.spokenText);
-    } catch (err: any) {
-      addTranscript(`Could not resolve question: ${err.message}`, 'system');
-      speakText('Sorry, I had trouble answering that.');
-    }
+    await executeFollowupQuery(question);
   };
 
   return (

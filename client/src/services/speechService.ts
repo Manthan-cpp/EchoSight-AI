@@ -2,6 +2,11 @@
 
 let recognitionInstance: any = null;
 let isListeningState = false;
+let currentOnCommand: ((transcript: string) => void) | null = null;
+let lastProcessedCommand = '';
+let lastProcessedTime = 0;
+
+export let isEchoSightSpeaking = false;
 
 export function isSpeechRecognitionSupported(): boolean {
   if (typeof window === 'undefined') return false;
@@ -11,6 +16,26 @@ export function isSpeechRecognitionSupported(): boolean {
 export function isSpeechSynthesisSupported(): boolean {
   if (typeof window === 'undefined') return false;
   return 'speechSynthesis' in window;
+}
+
+// Cached voices list
+let cachedVoices: SpeechSynthesisVoice[] = [];
+function getVoice(): SpeechSynthesisVoice | null {
+  if (typeof window === 'undefined' || !isSpeechSynthesisSupported()) return null;
+  if (cachedVoices.length === 0) {
+    cachedVoices = window.speechSynthesis.getVoices();
+  }
+  return (
+    cachedVoices.find((v) => v.lang === 'en-US' && !v.name.includes('Google')) ||
+    cachedVoices.find((v) => v.lang.startsWith('en')) ||
+    null
+  );
+}
+
+if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+  window.speechSynthesis.onvoiceschanged = () => {
+    cachedVoices = window.speechSynthesis.getVoices();
+  };
 }
 
 /**
@@ -23,9 +48,6 @@ export function speakText(text: string, onEnd?: () => void): void {
     return;
   }
 
-  // Cancel any ongoing speech to avoid queue overlap
-  window.speechSynthesis.cancel();
-
   // Strip markdown formatting symbols for natural spoken flow
   const cleanText = text
     .replace(/[#*_`~]/g, '')
@@ -37,20 +59,48 @@ export function speakText(text: string, onEnd?: () => void): void {
     return;
   }
 
-  const utterance = new SpeechSynthesisUtterance(cleanText);
-  utterance.rate = 0.95; // Calm, steady pace suitable for accessibility
-  utterance.pitch = 1.0;
+  const doSpeak = () => {
+    try {
+      const utterance = new SpeechSynthesisUtterance(cleanText);
+      utterance.rate = 0.95; // Calm, steady pace suitable for accessibility
+      utterance.pitch = 1.0;
+      utterance.lang = 'en-US';
 
-  utterance.onend = () => {
-    onEnd?.();
+      const voice = getVoice();
+      if (voice) {
+        utterance.voice = voice;
+      }
+
+      utterance.onstart = () => {
+        isEchoSightSpeaking = true;
+      };
+
+      utterance.onend = () => {
+        isEchoSightSpeaking = false;
+        onEnd?.();
+      };
+
+      utterance.onerror = (e) => {
+        console.warn('[Speech] Synthesis error:', e);
+        isEchoSightSpeaking = false;
+        onEnd?.();
+      };
+
+      window.speechSynthesis.speak(utterance);
+    } catch (err) {
+      console.warn('[Speech] speakText failed:', err);
+      isEchoSightSpeaking = false;
+      onEnd?.();
+    }
   };
 
-  utterance.onerror = (e) => {
-    console.warn('[Speech] Synthesis error:', e);
-    onEnd?.();
-  };
-
-  window.speechSynthesis.speak(utterance);
+  // If already speaking, cancel first and wait a brief tick to avoid Chrome's cancel-speak collision bug
+  if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+    window.speechSynthesis.cancel();
+    setTimeout(doSpeak, 40);
+  } else {
+    doSpeak();
+  }
 }
 
 /**
@@ -58,6 +108,7 @@ export function speakText(text: string, onEnd?: () => void): void {
  */
 export function stopSpeaking(): void {
   if (isSpeechSynthesisSupported()) {
+    isEchoSightSpeaking = false;
     window.speechSynthesis.cancel();
   }
 }
@@ -75,6 +126,9 @@ export function startListening(
     return false;
   }
 
+  // Always update the active command handler to prevent stale closures
+  currentOnCommand = onCommand;
+
   try {
     const SpeechRecognition =
       (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -86,11 +140,34 @@ export function startListening(
       recognitionInstance.lang = 'en-US';
 
       recognitionInstance.onresult = (event: any) => {
-        const lastResult = event.results[event.results.length - 1];
-        if (lastResult.isFinal) {
-          const transcript = lastResult[0].transcript.trim();
-          console.log('[Speech] Recognized voice command:', transcript);
-          onCommand(transcript);
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            const transcript = event.results[i][0].transcript.trim();
+            if (!transcript) continue;
+
+            const now = Date.now();
+
+            // Ignore audio input when EchoSight itself is speaking (echo cancellation guard)
+            if (isEchoSightSpeaking) {
+              console.log('[Speech] Ignored mic input while EchoSight is speaking:', transcript);
+              continue;
+            }
+
+            // Debounce rapid duplicate commands within 2.5 seconds
+            if (
+              transcript.toLowerCase() === lastProcessedCommand.toLowerCase() &&
+              now - lastProcessedTime < 2500
+            ) {
+              console.log('[Speech] Ignored duplicate rapid command:', transcript);
+              continue;
+            }
+
+            lastProcessedCommand = transcript;
+            lastProcessedTime = now;
+
+            console.log('[Speech] Recognized voice command:', transcript);
+            currentOnCommand?.(transcript);
+          }
         }
       };
 
@@ -116,7 +193,11 @@ export function startListening(
     }
 
     isListeningState = true;
-    recognitionInstance.start();
+    try {
+      recognitionInstance.start();
+    } catch {
+      // Already running
+    }
     onStatusChange?.(true);
     return true;
   } catch (err: any) {
@@ -133,6 +214,7 @@ export function startListening(
  */
 export function stopListening(onStatusChange?: (isListening: boolean) => void): void {
   isListeningState = false;
+  currentOnCommand = null;
   if (recognitionInstance) {
     try {
       recognitionInstance.stop();
