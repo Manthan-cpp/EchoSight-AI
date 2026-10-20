@@ -8,6 +8,7 @@ import {
   stopSpeaking,
   startListening,
   isSpeechRecognitionSupported,
+  markCommandHandled,
 } from './services/speechService';
 
 export function App() {
@@ -32,8 +33,9 @@ export function App() {
     if (hasEntered) return;
     setHasEntered(true);
     stopSpeaking();
+    markCommandHandled('enter');
     setCurrentTab('surroundings');
-    const msg = 'Entering Surroundings Mode. Voice control is active.';
+    const msg = "Entering Surroundings Mode. Say 'start surroundings' to begin.";
     setSpokenAlert(msg);
     speakText(msg);
   };
@@ -50,24 +52,19 @@ export function App() {
       }
 
       if (isSpeechRecognitionSupported()) {
+        const isEnterWord = (text: string) =>
+          /\b(enter|inter|start|begin|go|open|continue|yes|okay|surrounding|surroundings)\b/i.test(text);
+
         const started = startListening(
           (transcript) => {
-            const lower = transcript.toLowerCase().trim();
-            if (
-              lower.includes('enter') ||
-              lower.includes('start') ||
-              lower.includes('open') ||
-              lower.includes('go') ||
-              lower.includes('continue')
-            ) {
+            if (isEnterWord(transcript)) {
               handleEnter();
             }
           },
           (listening) => setIsListeningForEnter(listening),
           (err) => console.log('[Welcome] Voice recognition notice:', err),
           (interim) => {
-            const lower = interim.toLowerCase().trim();
-            if (lower.includes('enter')) {
+            if (isEnterWord(interim)) {
               handleEnter();
             }
           }

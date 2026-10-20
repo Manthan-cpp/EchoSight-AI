@@ -2,7 +2,14 @@ import { useState, useEffect, useRef } from 'react';
 import type { FormEvent } from 'react';
 import { Camera, StopCircle, Play, Mic, MicOff, Info } from 'lucide-react';
 import { callTool } from '../services/mcpClient';
-import { speakText, stopSpeaking, startListening, stopListening, isSpeechRecognitionSupported } from '../services/speechService';
+import {
+  speakText,
+  stopSpeaking,
+  startListening,
+  stopListening,
+  isSpeechRecognitionSupported,
+  markCommandHandled,
+} from '../services/speechService';
 
 interface TranscriptItem {
   id: string;
@@ -63,7 +70,7 @@ export function SurroundingsMode({
         (transcript) => handleVoiceCommand(transcript),
         undefined,
         (err) => addTranscript(err, 'system'),
-        (interim) => setInterimSpeech(interim)
+        (interim) => handleInterimSpeech(interim)
       );
     } else {
       stopListening();
@@ -344,10 +351,89 @@ export function SurroundingsMode({
     }
   };
 
+  // Flexible speech command matching helpers
+  const isStartCommand = (text: string) => {
+    const lower = text.toLowerCase().trim();
+    return (
+      (lower.includes('start') && lower.includes('surround')) ||
+      (lower.includes('start') && (lower.includes('camera') || lower.includes('watching') || lower.includes('mode'))) ||
+      (lower.includes('describe') && lower.includes('surround')) ||
+      /^(start|resume|begin|activate)$/i.test(lower) ||
+      /^(start|begin|open|launch)\s+(surroundings?|camera|video)(\s+mode)?$/i.test(lower) ||
+      /^(surroundings?|surroundings?\s+mode)$/i.test(lower) ||
+      /\bstart\s+surround/i.test(lower)
+    );
+  };
+
+  const isStopCommand = (text: string) => {
+    const lower = text.toLowerCase().trim();
+    return (
+      lower === 'stop' ||
+      lower === 'pause' ||
+      lower.includes('stop watching') ||
+      lower.includes('pause watching') ||
+      lower.includes("that's enough") ||
+      lower.includes('quiet') ||
+      lower.includes('shut up') ||
+      lower.includes('be quiet') ||
+      lower.includes('silence')
+    );
+  };
+
+  const isDisableVoiceCommand = (text: string) => {
+    const lower = text.toLowerCase().trim();
+    return (
+      lower.includes('disable voice') ||
+      lower.includes('turn off voice') ||
+      lower.includes('stop voice control') ||
+      lower.includes('disable voice control') ||
+      lower.includes('stop listening') ||
+      lower.includes('deactivate voice') ||
+      lower.includes('pause voice')
+    );
+  };
+
+  /**
+   * Fast Interim Speech Processor - triggers start/stop instantly without waiting for speech silence timeout!
+   */
+  const handleInterimSpeech = (interim: string) => {
+    setInterimSpeech(interim);
+    const lower = interim.toLowerCase().trim();
+
+    // Ignore residual entrance speech
+    if (lower === 'enter' || lower === 'inter') return;
+
+    // Fast-path: Start surroundings immediately on first detected syllable of "start surrounding..."
+    if (isStartCommand(lower) && !isWatchingRef.current) {
+      console.log('[Surroundings] Fast interim trigger: start camera on:', lower);
+      setInterimSpeech('');
+      markCommandHandled(lower);
+      startWatching();
+      return;
+    }
+
+    // Fast-path: Stop camera immediately on interim stop
+    if (isStopCommand(lower) && isWatchingRef.current) {
+      console.log('[Surroundings] Fast interim trigger: stop camera on:', lower);
+      setInterimSpeech('');
+      markCommandHandled(lower);
+      stopWatching();
+      return;
+    }
+  };
+
   /**
    * Execute follow-up query while pausing background cadence loop.
    */
   const executeFollowupQuery = async (question: string) => {
+    // Safety: If camera is inactive and no prior context exists, do not call Gemini with empty context
+    if (!isWatchingRef.current && !priorContextRef.current) {
+      const notice = "Camera is inactive. Say 'start surroundings' to begin camera description.";
+      addTranscript(notice, 'system');
+      speakText(notice);
+      return;
+    }
+
     // 1. Temporarily pause any scheduled cadence cycle
     if (cadenceTimerRef.current) {
       clearTimeout(cadenceTimerRef.current);
@@ -403,18 +489,14 @@ export function SurroundingsMode({
   const handleVoiceCommand = async (command: string) => {
     const lower = command.toLowerCase().trim();
     setInterimSpeech('');
-    addTranscript(`Heard: "${command}"`, 'followup');
+
+    // Ignore residual welcome screen transition words
+    if (lower === 'enter' || lower === 'inter') {
+      return;
+    }
 
     // 0. Disable voice control triggers
-    if (
-      lower.includes('disable voice') ||
-      lower.includes('turn off voice') ||
-      lower.includes('stop voice control') ||
-      lower.includes('disable voice control') ||
-      lower.includes('stop listening') ||
-      lower.includes('deactivate voice') ||
-      lower.includes('pause voice')
-    ) {
+    if (isDisableVoiceCommand(lower)) {
       updateVoiceActive(false);
       stopListening();
       setInterimSpeech('');
@@ -436,28 +518,15 @@ export function SurroundingsMode({
     }
 
     // 2. Stop camera watching triggers
-    if (
-      lower.includes('stop') ||
-      lower.includes('pause') ||
-      lower.includes("that's enough") ||
-      lower.includes('quiet') ||
-      lower.includes('shut up') ||
-      lower.includes('be quiet') ||
-      lower.includes('silence')
-    ) {
-      stopWatching();
+    if (isStopCommand(lower)) {
+      if (isWatchingRef.current) {
+        stopWatching();
+      }
       return;
     }
 
-    // 3. Start control triggers (use ref to avoid stale closure)
-    if (
-      lower.includes('start surroundings') ||
-      lower.includes('describe surroundings') ||
-      lower.includes('start watching') ||
-      lower === 'start' ||
-      lower.includes('resume') ||
-      lower.includes('continue')
-    ) {
+    // 3. Start control triggers (robust match for 'start surroundings mode', 'start surrounding', etc.)
+    if (isStartCommand(lower)) {
       if (!isWatchingRef.current) {
         startWatching();
       }
@@ -472,13 +541,29 @@ export function SurroundingsMode({
       lower.includes('exhaustive') ||
       lower.includes('describe in detail')
     ) {
+      if (!isWatchingRef.current && !priorContextRef.current) {
+        const notice = "Camera is inactive. Say 'start surroundings' to begin.";
+        addTranscript(notice, 'system');
+        speakText(notice);
+        return;
+      }
+      addTranscript(`Heard: "${command}"`, 'followup');
       await executeFollowupQuery(
         'Please describe everything in the current view in exhaustive, patient, line-by-line detail, including spatial positioning, textures, objects, and any navigation obstacles.'
       );
       return;
     }
 
-    // 5. Any other speech is treated as a direct question
+    // 5. If camera is NOT active and no prior context exists, prompt user to start
+    if (!isWatchingRef.current && !priorContextRef.current) {
+      const notice = "Camera is inactive. Say 'start surroundings' to begin.";
+      addTranscript(notice, 'system');
+      speakText(notice);
+      return;
+    }
+
+    // 6. Any other speech while camera is active is treated as a direct question
+    addTranscript(`Heard: "${command}"`, 'followup');
     await executeFollowupQuery(command);
   };
 

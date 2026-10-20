@@ -400,7 +400,10 @@ export async function answerFollowup(
     ? 'Provide an exhaustive, structured, line-by-line description covering all elements.'
     : 'Provide a direct, punchy answer in strictly 1 to 2 short sentences (under 20 words). Answer immediately without introductory filler or restating the entire prior scene.';
 
-  const prompt = `You are EchoSight answering a follow-up question from a blind or low-vision user about a previously described visual scene or scorecard.
+  const isScorecardContext = /scorecard|cricket|overs|wickets|batsman|bowler|runs/i.test(priorContext);
+  const contextSubject = isScorecardContext ? 'match scorecard' : 'visual surroundings';
+
+  const prompt = `You are EchoSight answering a follow-up question from a blind or low-vision user about their ${contextSubject}.
 Prior Context / Recent Description:
 """
 ${priorContext || 'No previous context recorded.'}
@@ -408,7 +411,7 @@ ${priorContext || 'No previous context recorded.'}
 
 User Follow-Up Question: "${question}"
 
-${brevityInstruction} Maintain calm, clear speech phrasing.`;
+${brevityInstruction} Maintain calm, clear speech phrasing. Do not ask for or mention scorecards unless the prior context was explicitly a sports match.`;
 
   const parts: any[] = [{ text: prompt }];
 

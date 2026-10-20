@@ -151,6 +151,14 @@ export function stopSpeaking(): void {
 }
 
 /**
+ * Mark a command as already handled to prevent residual duplicate triggers.
+ */
+export function markCommandHandled(command: string): void {
+  lastProcessedCommand = command.trim();
+  lastProcessedTime = Date.now();
+}
+
+/**
  * Update the active listening handlers without resetting speech recognition.
  */
 export function updateListeningHandlers(
@@ -232,10 +240,10 @@ export function startListening(
         if (trimmedFinal) {
           const now = Date.now();
 
-          // Reject duplicate commands fired within 1.5 seconds
+          // Reject duplicate commands fired within 2.5 seconds
           if (
             trimmedFinal.toLowerCase() === lastProcessedCommand.toLowerCase() &&
-            now - lastProcessedTime < 1500
+            now - lastProcessedTime < 2500
           ) {
             console.log('[Speech] Ignored duplicate rapid command:', trimmedFinal);
             return;
