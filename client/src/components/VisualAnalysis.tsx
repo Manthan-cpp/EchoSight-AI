@@ -1,8 +1,29 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { ChangeEvent, FormEvent } from 'react';
-import { Upload, FileText, Video, Trophy, CheckCircle2, RefreshCw, Volume2, VolumeX, Mic, MicOff, MessageSquare } from 'lucide-react';
+import {
+  Upload,
+  FileText,
+  Video,
+  Trophy,
+  CheckCircle2,
+  RefreshCw,
+  Volume2,
+  VolumeX,
+  Mic,
+  MicOff,
+  MessageSquare,
+  AlertCircle,
+} from 'lucide-react';
 import { callTool, type ToolResult } from '../services/mcpClient';
-import { speakText, stopSpeaking, startListening, stopListening, isSpeechRecognitionSupported } from '../services/speechService';
+import {
+  speakText,
+  stopSpeaking,
+  startListening,
+  stopListening,
+  isSpeechRecognitionSupported,
+  onSpeechStateChange,
+  isEchoSightSpeaking,
+} from '../services/speechService';
 
 type AnalysisMode = 'image' | 'video' | 'scorecard';
 
@@ -22,15 +43,43 @@ export function VisualAnalysis() {
   const [toolResult, setToolResult] = useState<ToolResult | null>(null);
   const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
   const [isVoiceListening, setIsVoiceListening] = useState<boolean>(false);
+  const [interimSpeech, setInterimSpeech] = useState<string>('');
   const [followupText, setFollowupText] = useState<string>('');
   const [isAnsweringFollowup, setIsAnsweringFollowup] = useState<boolean>(false);
   const [followups, setFollowups] = useState<FollowupItem[]>([]);
   const [contextHistory, setContextHistory] = useState<string>('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [interruptionNotice, setInterruptionNotice] = useState<string | null>(null);
+
+  // Synchronization and concurrency locks to guarantee user questions take priority
+  const queryTokenRef = useRef<number>(0);
+  const narrationSupersededRef = useRef<boolean>(false);
+  const selectedFileRef = useRef<File | null>(null);
+  const fileBase64Ref = useRef<string | null>(null);
+  const contextHistoryRef = useRef<string>('');
+  const modeRef = useRef<AnalysisMode>('image');
+  const isAnalyzingRef = useRef<boolean>(false);
+
+  // Keep state refs synchronized to eliminate stale closures in speech callbacks
+  useEffect(() => {
+    selectedFileRef.current = selectedFile;
+    fileBase64Ref.current = fileBase64;
+    contextHistoryRef.current = contextHistory;
+    modeRef.current = mode;
+    isAnalyzingRef.current = isAnalyzing;
+  }, [selectedFile, fileBase64, contextHistory, mode, isAnalyzing]);
+
+  // Synchronize speech state directly from speech service (including instant barge-in interruptions)
+  useEffect(() => {
+    return onSpeechStateChange((speaking) => {
+      setIsSpeaking(speaking);
+    });
+  }, []);
 
   // Clean up speech on unmount
   useEffect(() => {
     return () => {
+      narrationSupersededRef.current = true;
       stopSpeaking();
       stopListening();
     };
@@ -45,7 +94,10 @@ export function VisualAnalysis() {
       setFollowups([]);
       setContextHistory('');
       setErrorMessage(null);
+      setInterruptionNotice(null);
+      narrationSupersededRef.current = true;
       stopSpeaking();
+      setIsSpeaking(false);
 
       // Read file as base64
       try {
@@ -71,8 +123,10 @@ export function VisualAnalysis() {
   };
 
   const handleReset = () => {
+    narrationSupersededRef.current = true;
     stopSpeaking();
     stopListening();
+    setIsSpeaking(false);
     setIsVoiceListening(false);
     setSelectedFile(null);
     if (previewUrl) URL.revokeObjectURL(previewUrl);
@@ -82,44 +136,63 @@ export function VisualAnalysis() {
     setFollowups([]);
     setContextHistory('');
     setErrorMessage(null);
+    setInterruptionNotice(null);
+    setInterimSpeech('');
+    setFollowupText('');
   };
 
+  /**
+   * Run initial exhaustive visual/video/scorecard analysis.
+   */
   const handleRunAnalysis = async () => {
-    if (!fileBase64 || !selectedFile) return;
+    if (!fileBase64Ref.current || !selectedFileRef.current) return;
 
+    const token = ++queryTokenRef.current;
+    narrationSupersededRef.current = false;
     setIsAnalyzing(true);
     setErrorMessage(null);
+    setInterruptionNotice(null);
     stopSpeaking();
+    setIsSpeaking(false);
 
     try {
       let result: ToolResult;
-      const mimeType = selectedFile.type || (mode === 'video' ? 'video/mp4' : 'image/jpeg');
+      const file = selectedFileRef.current;
+      const currentMode = modeRef.current;
+      const mimeType = file.type || (currentMode === 'video' ? 'video/mp4' : 'image/jpeg');
 
-      if (mode === 'image') {
+      if (currentMode === 'image') {
         result = await callTool('analyze_visual', {
-          image_base64: fileBase64,
+          image_base64: fileBase64Ref.current,
           mime_type: mimeType,
         });
-      } else if (mode === 'video') {
+      } else if (currentMode === 'video') {
         result = await callTool('analyze_video', {
-          video_base64: fileBase64,
+          video_base64: fileBase64Ref.current,
           mime_type: mimeType,
         });
       } else {
         result = await callTool('analyze_scorecard', {
-          image_base64: fileBase64,
+          image_base64: fileBase64Ref.current,
           mime_type: mimeType,
         });
       }
 
+      // Always populate the visual output cards
       setToolResult(result);
-      const initialContext = `Tool: ${mode}\nDescription: ${result.detailedText}`;
+      const initialContext = `Tool: ${currentMode}\nDescription: ${result.detailedText}`;
       setContextHistory(initialContext);
 
-      // Play spoken text automatically
+      // BARGE-IN CHECK: If the user asked a question while analysis was running,
+      // DO NOT play the background analysis narration over the user's question!
+      if (narrationSupersededRef.current || token !== queryTokenRef.current) {
+        console.log('[VisualAnalysis] Initial narration superseded by user question.');
+        return;
+      }
+
+      // Play spoken text automatically if not interrupted
       if (result.spokenText) {
-        setIsSpeaking(true);
-        speakText(result.spokenText, () => setIsSpeaking(false));
+        speakText(result.spokenText);
       }
     } catch (err: any) {
       setErrorMessage(err.message || 'Analysis failed. Please check connection and try again.');
@@ -128,53 +201,83 @@ export function VisualAnalysis() {
     }
   };
 
+  /**
+   * Toggle manual speech narration.
+   */
   const handleToggleSpeech = () => {
-    if (isSpeaking) {
+    if (isSpeaking || isEchoSightSpeaking) {
+      narrationSupersededRef.current = true;
       stopSpeaking();
       setIsSpeaking(false);
+      setInterruptionNotice('Narration paused.');
     } else if (toolResult?.spokenText) {
-      setIsSpeaking(true);
-      speakText(toolResult.spokenText, () => setIsSpeaking(false));
+      narrationSupersededRef.current = false;
+      setInterruptionNotice(null);
+      speakText(toolResult.spokenText);
     }
   };
 
+  /**
+   * Answer user follow-up questions with instant interruption of ongoing narration.
+   */
   const handleAskFollowup = async (question: string) => {
     const trimmed = question.trim();
-    if (!trimmed || isAnsweringFollowup) return;
+    if (!trimmed) return;
 
+    // 1. INSTANT INTERRUPTION: Silence narration immediately on question submission!
+    narrationSupersededRef.current = true;
+    stopSpeaking();
+    setIsSpeaking(false);
+
+    const token = ++queryTokenRef.current;
     setIsAnsweringFollowup(true);
     setErrorMessage(null);
-    stopSpeaking();
+    setInterruptionNotice(`Interrupted narration to answer: "${trimmed}"`);
+    setFollowupText('');
+    setInterimSpeech('');
 
     try {
-      const mimeType = selectedFile?.type || 'image/jpeg';
+      const currentFile = selectedFileRef.current;
+      const currentBase64 = fileBase64Ref.current;
+      const currentContext = contextHistoryRef.current;
+      const mimeType = currentFile?.type || 'image/jpeg';
+
       const result = await callTool('ask_followup', {
         question: trimmed,
-        prior_context: contextHistory,
-        image_base64: fileBase64 || undefined,
+        prior_context: currentContext,
+        image_base64: currentBase64 || undefined,
         mime_type: mimeType,
       });
 
+      // If superseded by an even newer question, discard this response
+      if (token !== queryTokenRef.current) {
+        console.log('[VisualAnalysis] Followup response superseded by newer user question.');
+        return;
+      }
+
+      const answerText = result.spokenText || result.detailedText;
       const newFollowup: FollowupItem = {
         id: Date.now().toString(),
         question: trimmed,
-        answer: result.spokenText || result.detailedText,
+        answer: answerText,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       };
 
       setFollowups((prev) => [...prev, newFollowup]);
       setContextHistory((prev) => `${prev}\nUser: ${trimmed}\nEchoSight: ${result.detailedText}`);
-      setFollowupText('');
 
-      // Speak answer out loud
+      // Answer user question first and immediately speak it aloud!
       if (result.spokenText) {
-        setIsSpeaking(true);
-        speakText(result.spokenText, () => setIsSpeaking(false));
+        speakText(result.spokenText);
       }
     } catch (err: any) {
-      setErrorMessage(`Follow-up error: ${err.message}`);
+      if (token === queryTokenRef.current) {
+        setErrorMessage(`Follow-up error: ${err.message}`);
+      }
     } finally {
-      setIsAnsweringFollowup(false);
+      if (token === queryTokenRef.current) {
+        setIsAnsweringFollowup(false);
+      }
     }
   };
 
@@ -183,18 +286,77 @@ export function VisualAnalysis() {
     handleAskFollowup(followupText);
   };
 
-  const handleToggleVoiceInput = () => {
+  /**
+   * Voice Command Processor with Instant Barge-In Interruption.
+   */
+  const handleVoiceCommand = (command: string) => {
+    const lower = command.toLowerCase().trim();
+    setInterimSpeech('');
+
+    // 1. Stop / Silence commands
+    if (
+      lower.includes('stop') ||
+      lower.includes('pause') ||
+      lower.includes("that's enough") ||
+      lower.includes('quiet') ||
+      lower.includes('shut up') ||
+      lower.includes('be quiet') ||
+      lower.includes('silence')
+    ) {
+      narrationSupersededRef.current = true;
+      stopSpeaking();
+      setIsSpeaking(false);
+      setInterruptionNotice('Silenced audio on user voice command.');
+      return;
+    }
+
+    // 2. Trigger initial analysis by voice
+    if (
+      lower.includes('analyze this') ||
+      lower.includes('start analysis') ||
+      lower.includes('explain this') ||
+      lower.includes('describe this') ||
+      lower.includes('read this')
+    ) {
+      if (fileBase64Ref.current && !isAnalyzingRef.current) {
+        handleRunAnalysis();
+        return;
+      }
+    }
+
+    // 3. Any other spoken input is treated as a direct question that interrupts ongoing narration!
+    handleAskFollowup(command);
+  };
+
+  /**
+   * Interim speech callback: interrupts speech on the very first syllable spoken by the user!
+   */
+  const handleInterimSpeech = (interim: string) => {
+    setInterimSpeech(interim);
+
+    // Instant barge-in: If user speaks ANY word while EchoSight is narrating, silence system voice immediately
+    if (interim.trim() && (window.speechSynthesis?.speaking || isEchoSightSpeaking)) {
+      narrationSupersededRef.current = true;
+      stopSpeaking();
+      setIsSpeaking(false);
+      setInterruptionNotice('Interrupted: listening to your question...');
+    }
+  };
+
+  /**
+   * Toggle continuous hands-free voice control.
+   */
+  const toggleVoiceControl = () => {
     if (isVoiceListening) {
-      stopListening();
+      stopListening((listening) => setIsVoiceListening(listening));
       setIsVoiceListening(false);
+      setInterimSpeech('');
     } else {
       const started = startListening(
-        (transcript) => {
-          setFollowupText(transcript);
-          handleAskFollowup(transcript);
-        },
+        (transcript) => handleVoiceCommand(transcript),
         (listening) => setIsVoiceListening(listening),
-        (err) => setErrorMessage(err)
+        (err) => setErrorMessage(err),
+        (interim) => handleInterimSpeech(interim)
       );
       if (started) {
         setIsVoiceListening(true);
@@ -212,7 +374,7 @@ export function VisualAnalysis() {
               Visual & Video Analysis
             </h2>
             <p className="text-sm text-[var(--text-secondary)]">
-              Deep structured walkthroughs for charts, video clips, and sports scorecards.
+              Deep structured walkthroughs with instant conversational interruption.
             </p>
           </div>
 
@@ -257,6 +419,61 @@ export function VisualAnalysis() {
               <span>Scorecard Reasoning</span>
             </button>
           </div>
+        </div>
+
+        {/* Voice Control & Status Bar */}
+        <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-2">
+            {isSpeechRecognitionSupported() && (
+              <button
+                type="button"
+                onClick={toggleVoiceControl}
+                className={`btn-secondary text-xs flex items-center gap-1.5 py-1 px-2.5 rounded-[var(--radius-sm)] ${
+                  isVoiceListening
+                    ? 'border-[var(--status-listening-border)] bg-[var(--status-listening-bg)] text-[var(--status-listening-text)] font-semibold'
+                    : ''
+                }`}
+                aria-pressed={isVoiceListening}
+                aria-label={isVoiceListening ? 'Disable hands-free voice control' : 'Enable hands-free voice control'}
+              >
+                {isVoiceListening ? (
+                  <>
+                    <Mic className="h-3.5 w-3.5" aria-hidden="true" />
+                    <span>Voice Control: Active</span>
+                  </>
+                ) : (
+                  <>
+                    <MicOff className="h-3.5 w-3.5 text-[var(--text-secondary)]" aria-hidden="true" />
+                    <span>Enable Voice Control</span>
+                  </>
+                )}
+              </button>
+            )}
+
+            {isVoiceListening && interimSpeech && (
+              <span className="text-[var(--accent-primary)] italic font-medium animate-pulse">
+                Heard: "{interimSpeech}"
+              </span>
+            )}
+          </div>
+
+          {/* Active Narration and Instant Interruption Trigger */}
+          {isSpeaking && (
+            <div className="flex items-center gap-2">
+              <span className="text-[var(--accent-primary)] font-semibold flex items-center gap-1.5">
+                <span className="h-2 w-2 rounded-full bg-[var(--accent-primary)] animate-pulse" />
+                Narrating (Ask question or say Stop to interrupt)
+              </span>
+              <button
+                onClick={handleToggleSpeech}
+                className="btn-secondary text-xs py-0.5 px-2 flex items-center gap-1"
+                aria-label="Silence audio"
+              >
+                <VolumeX className="h-3 w-3" aria-hidden="true" />
+                <span>Silence</span>
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Upload / Capture Drop Area */}
@@ -337,9 +554,33 @@ export function VisualAnalysis() {
         </div>
       </section>
 
+      {/* Interruption Notification Banner (Aria-live for accessibility) */}
+      {interruptionNotice && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="p-3 rounded-[var(--radius-sm)] border border-[var(--accent-primary)] bg-[var(--bg-subtle)] text-[var(--text-primary)] flex items-center justify-between text-xs"
+        >
+          <div className="flex items-center gap-2">
+            <AlertCircle className="h-4 w-4 text-[var(--accent-primary)] shrink-0" aria-hidden="true" />
+            <span>{interruptionNotice}</span>
+          </div>
+          <button
+            onClick={() => setInterruptionNotice(null)}
+            className="font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)] ml-2"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* Error Notice */}
       {errorMessage && (
-        <div className="p-3 rounded-[var(--radius-sm)] border border-[var(--border-neutral)] bg-[var(--bg-surface)] text-[var(--text-primary)] flex items-center justify-between text-xs">
+        <div
+          role="alert"
+          aria-live="assertive"
+          className="p-3 rounded-[var(--radius-sm)] border border-[var(--border-neutral)] bg-[var(--bg-surface)] text-[var(--text-primary)] flex items-center justify-between text-xs"
+        >
           <span>{errorMessage}</span>
           <button
             onClick={() => setErrorMessage(null)}
@@ -361,12 +602,12 @@ export function VisualAnalysis() {
               <button
                 onClick={handleToggleSpeech}
                 className="btn-secondary text-xs flex items-center gap-1.5 py-1 px-2.5"
-                aria-label={isSpeaking ? 'Stop spoken readout' : 'Read spoken analysis aloud'}
+                aria-label={isSpeaking ? 'Silence spoken readout' : 'Read spoken analysis aloud'}
               >
                 {isSpeaking ? (
                   <>
                     <VolumeX className="h-3.5 w-3.5" aria-hidden="true" />
-                    <span>Stop Audio</span>
+                    <span>Silence Audio</span>
                   </>
                 ) : (
                   <>
@@ -445,12 +686,16 @@ export function VisualAnalysis() {
                 {toolResult.detailedText}
               </div>
             </div>
+          </div>
+        )}
 
-            {/* Conversational Follow-Up Chain */}
+        {/* Conversational Follow-Up Chain (Visible once file is loaded or analyzed) */}
+        {(toolResult || selectedFile) && (
+          <div className="space-y-4 pt-2 border-t border-[var(--border-neutral)]">
             {followups.length > 0 && (
-              <div className="space-y-3 pt-2">
+              <div className="space-y-3">
                 <h4 className="text-xs font-bold uppercase tracking-wider text-[var(--text-secondary)]">
-                  Follow-Up Exploration
+                  Follow-Up Answers
                 </h4>
                 {followups.map((item) => (
                   <div
@@ -469,29 +714,33 @@ export function VisualAnalysis() {
               </div>
             )}
 
-            {/* Follow-up question input */}
+            {/* Follow-up question input - ALWAYS available to interrupt immediately */}
             <form onSubmit={handleFollowupSubmit} className="pt-2 flex gap-2">
               <label htmlFor="analysis-followup-input" className="sr-only">
-                Ask a follow-up question
+                Ask a question or interrupt ongoing narration
               </label>
               <input
                 id="analysis-followup-input"
                 type="text"
                 value={followupText}
                 onChange={(e) => setFollowupText(e.target.value)}
-                placeholder="Ask a follow-up (e.g. 'What is the highest value?', 'Who bowled the 18th over?')"
+                placeholder={
+                  isSpeaking
+                    ? "Type question to interrupt narration (or speak aloud)..."
+                    : "Ask a question (e.g. 'What is the highest value?', 'Who won?')"
+                }
                 disabled={isAnsweringFollowup}
                 className="flex-1 rounded-[var(--radius-sm)] border border-[var(--border-neutral)] bg-[var(--bg-surface)] px-3 py-2 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:ring-2 focus:ring-[var(--focus-ring)]"
               />
               {isSpeechRecognitionSupported() && (
                 <button
                   type="button"
-                  onClick={handleToggleVoiceInput}
+                  onClick={toggleVoiceControl}
                   disabled={isAnsweringFollowup}
                   className={`btn-secondary text-xs px-3 flex items-center gap-1 ${
                     isVoiceListening ? 'border-[var(--accent-primary)] text-[var(--accent-primary)]' : ''
                   }`}
-                  aria-label={isVoiceListening ? 'Stop listening' : 'Ask question with voice'}
+                  aria-label={isVoiceListening ? 'Stop voice recognition' : 'Ask question with voice'}
                 >
                   {isVoiceListening ? (
                     <MicOff className="h-4 w-4" aria-hidden="true" />
@@ -510,7 +759,7 @@ export function VisualAnalysis() {
                 ) : (
                   <span className="flex items-center gap-1">
                     <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
-                    <span>Ask</span>
+                    <span>{isSpeaking ? 'Interrupt & Ask' : 'Ask'}</span>
                   </span>
                 )}
               </button>

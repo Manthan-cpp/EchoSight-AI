@@ -9,6 +9,28 @@ let lastProcessedTime = 0;
 
 export let isEchoSightSpeaking = false;
 
+type SpeechStateListener = (speaking: boolean) => void;
+const speechListeners = new Set<SpeechStateListener>();
+
+export function onSpeechStateChange(listener: SpeechStateListener): () => void {
+  speechListeners.add(listener);
+  listener(isEchoSightSpeaking);
+  return () => {
+    speechListeners.delete(listener);
+  };
+}
+
+function updateSpeakingState(speaking: boolean): void {
+  isEchoSightSpeaking = speaking;
+  speechListeners.forEach((fn) => {
+    try {
+      fn(speaking);
+    } catch (err) {
+      console.warn('[Speech] Error in speech state listener:', err);
+    }
+  });
+}
+
 export function isSpeechRecognitionSupported(): boolean {
   if (typeof window === 'undefined') return false;
   return 'SpeechRecognition' in window || 'webkitSpeechRecognition' in window;
@@ -64,7 +86,7 @@ export function speakText(text: string, onEnd?: () => void): void {
   const safeOnEnd = () => {
     if (!hasEnded) {
       hasEnded = true;
-      isEchoSightSpeaking = false;
+      updateSpeakingState(false);
       onEnd?.();
     }
   };
@@ -82,7 +104,7 @@ export function speakText(text: string, onEnd?: () => void): void {
       }
 
       utterance.onstart = () => {
-        isEchoSightSpeaking = true;
+        updateSpeakingState(true);
       };
 
       utterance.onend = () => {
@@ -123,9 +145,20 @@ export function speakText(text: string, onEnd?: () => void): void {
  */
 export function stopSpeaking(): void {
   if (isSpeechSynthesisSupported()) {
-    isEchoSightSpeaking = false;
+    updateSpeakingState(false);
     window.speechSynthesis.cancel();
   }
+}
+
+/**
+ * Update the active listening handlers without resetting speech recognition.
+ */
+export function updateListeningHandlers(
+  onCommand: (transcript: string) => void,
+  onInterim?: (interim: string) => void
+): void {
+  currentOnCommand = onCommand;
+  currentOnInterim = onInterim || null;
 }
 
 /**
