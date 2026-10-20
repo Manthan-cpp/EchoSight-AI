@@ -22,6 +22,7 @@ import {
   isSpeechRecognitionSupported,
   onSpeechStateChange,
   isEchoSightSpeaking,
+  markCommandHandled,
 } from '../services/speechService';
 
 type DetectedMediaType = 'image' | 'video';
@@ -73,6 +74,7 @@ export function VisualAnalysis({
   const fileBase64Ref = useRef<string | null>(null);
   const contextHistoryRef = useRef<string>('');
   const isAnalyzingRef = useRef<boolean>(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Keep state refs synchronized to eliminate stale closures in speech callbacks
   useEffect(() => {
@@ -137,6 +139,7 @@ export function VisualAnalysis({
       try {
         const base64 = await readFileAsBase64(file);
         setFileBase64(base64);
+        speakText(`${file.name} selected. Say "analyze this" to begin.`);
       } catch (err: any) {
         setErrorMessage('Failed to read file: ' + err.message);
       }
@@ -322,6 +325,27 @@ export function VisualAnalysis({
     handleAskFollowup(followupText);
   };
 
+  const isNavigateToSurroundingsCommand = (text: string): boolean => {
+    const lower = text.toLowerCase().trim();
+    return (
+      // "move to / go to / switch to / open / back to ... surroundings / camera"
+      /\b(move|go|switch|open|navigate|back|return|take me)\b.*\b(surroundings?|camera)\b/i.test(lower) ||
+      // "surroundings mode" / "surrounding mode" / "surroundings tab"
+      /\b(surroundings?)\s*(mode|tab)?\b/i.test(lower) ||
+      // "start surroundings" / "describe surroundings" / "live camera"
+      /\b(start|describe|begin)\b.*\b(surroundings?|camera)\b/i.test(lower) ||
+      /\b(camera mode|live camera|live mode)\b/i.test(lower)
+    );
+  };
+
+  const isFileUploadCommand = (text: string): boolean => {
+    const lower = text.toLowerCase().trim();
+    return (
+      /\b(upload|choose|select|pick|browse)\b.*\b(file|image|video|photo|media)\b/i.test(lower) ||
+      /^(upload|choose file|select file|pick file|browse)$/i.test(lower)
+    );
+  };
+
   /**
    * Voice Command Processor with Instant Barge-In Interruption.
    */
@@ -347,19 +371,26 @@ export function VisualAnalysis({
       return;
     }
 
-    // 1. Navigation triggers
-    if (
-      lower.includes('switch to surroundings') ||
-      lower.includes('open surroundings') ||
-      lower.includes('go to surroundings') ||
-      lower.includes('surroundings mode')
-    ) {
-      speakText('Switching to Surroundings Mode.');
+    // 1. File selection by voice (for blind/hands-free users)
+    if (isFileUploadCommand(lower)) {
+      setInterimSpeech('');
+      stopSpeaking();
+      speakText('Opening file picker. Please choose your image or video.');
+      fileInputRef.current?.click();
+      return;
+    }
+
+    // 2. Navigation triggers (Surroundings Mode Tab)
+    if (isNavigateToSurroundingsCommand(lower)) {
+      narrationSupersededRef.current = true;
+      stopSpeaking();
+      setIsSpeaking(false);
+      speakText('Switching to Surroundings Mode. Say "start surroundings" to begin.');
       onNavigateTab?.('surroundings');
       return;
     }
 
-    // 2. Stop / Silence audio commands
+    // 3. Stop / Silence audio commands
     if (
       lower.includes('stop') ||
       lower.includes('pause') ||
@@ -376,7 +407,7 @@ export function VisualAnalysis({
       return;
     }
 
-    // 3. Trigger initial analysis by voice
+    // 4. Trigger initial analysis by voice
     if (
       lower.includes('analyze this') ||
       lower.includes('start analysis') ||
@@ -390,7 +421,7 @@ export function VisualAnalysis({
       }
     }
 
-    // 4. Any other spoken input is treated as a direct question that interrupts ongoing narration!
+    // 5. Any other spoken input is treated as a direct question that interrupts ongoing narration!
     handleAskFollowup(command);
   };
 
@@ -399,6 +430,31 @@ export function VisualAnalysis({
    */
   const handleInterimSpeech = (interim: string) => {
     setInterimSpeech(interim);
+    const lower = interim.toLowerCase().trim();
+
+    // Fast-path: Interim navigation to Surroundings Mode
+    if (isNavigateToSurroundingsCommand(lower)) {
+      console.log('[VisualAnalysis] Fast interim navigation to surroundings:', lower);
+      setInterimSpeech('');
+      markCommandHandled(lower);
+      narrationSupersededRef.current = true;
+      stopSpeaking();
+      setIsSpeaking(false);
+      speakText('Switching to Surroundings Mode. Say "start surroundings" to begin.');
+      onNavigateTab?.('surroundings');
+      return;
+    }
+
+    // Fast-path: Interim file selection trigger
+    if (isFileUploadCommand(lower)) {
+      console.log('[VisualAnalysis] Fast interim file upload trigger:', lower);
+      setInterimSpeech('');
+      markCommandHandled(lower);
+      stopSpeaking();
+      speakText('Opening file picker. Please choose your image or video.');
+      fileInputRef.current?.click();
+      return;
+    }
 
     // Instant barge-in: If user speaks ANY word while EchoSight is narrating, silence system voice immediately
     if (interim.trim() && (window.speechSynthesis?.speaking || isEchoSightSpeaking)) {
@@ -498,6 +554,16 @@ export function VisualAnalysis({
           </div>
         ) : null}
 
+        {/* Accessible hidden file input - callable anytime by voice or click */}
+        <input
+          id="visual-file-input"
+          ref={fileInputRef}
+          type="file"
+          accept="image/jpeg,image/png,image/webp,video/mp4,video/webm"
+          onChange={handleFileChange}
+          className="sr-only"
+        />
+
         {/* Unified Upload / Drop Area */}
         <div className="space-y-4">
           {!selectedFile ? (
@@ -510,15 +576,8 @@ export function VisualAnalysis({
                 Select or Drop Any Media (Image, Chart, Scorecard, or Video Clip)
               </span>
               <span className="text-xs text-[var(--text-secondary)] mt-1">
-                Auto-detects format • Images (JPEG, PNG, WebP up to 10MB) • Videos (MP4, WebM up to 20MB / 30s)
+                Voice-Ready: Say "choose file" to open picker • Images (JPEG, PNG, WebP up to 10MB) • Videos (MP4, WebM up to 20MB)
               </span>
-              <input
-                id="visual-file-input"
-                type="file"
-                accept="image/jpeg,image/png,image/webp,video/mp4,video/webm"
-                onChange={handleFileChange}
-                className="sr-only"
-              />
             </label>
           ) : (
             <div className="border border-[var(--border-neutral)] rounded-[var(--radius-md)] p-4 bg-[var(--bg-surface)] space-y-4">

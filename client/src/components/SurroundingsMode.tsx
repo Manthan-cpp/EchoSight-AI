@@ -393,8 +393,22 @@ export function SurroundingsMode({
     );
   };
 
+  const isNavigateToAnalysisCommand = (text: string): boolean => {
+    const lower = text.toLowerCase().trim();
+    return (
+      // "move to / go to / switch to / open / take me to ... analysis"
+      /\b(move|go|switch|open|navigate|take me|jump)\b.*\b(analysis|visual)\b/i.test(lower) ||
+      // "analysis tab" / "analysis mode" / "visual analysis"
+      /\b(analysis|visual analysis)\s*(tab|mode)?\b/i.test(lower) ||
+      // "I want you to analyze / I want to analyze / analyze a video / image / photo / chart"
+      /\b(analyze|inspect|examine)\b.*\b(video|image|photo|picture|chart|scorecard|graphic|document)\b/i.test(lower) ||
+      // "upload an image / video / file"
+      /\bupload\b.*\b(image|video|photo|picture|file)\b/i.test(lower)
+    );
+  };
+
   /**
-   * Fast Interim Speech Processor - triggers start/stop instantly without waiting for speech silence timeout!
+   * Fast Interim Speech Processor - triggers start/stop/navigation instantly without waiting for speech silence timeout!
    */
   const handleInterimSpeech = (interim: string) => {
     setInterimSpeech(interim);
@@ -402,6 +416,20 @@ export function SurroundingsMode({
 
     // Ignore residual entrance speech
     if (lower === 'enter' || lower === 'inter') return;
+
+    // Fast-path: Switch to Visual & Video Analysis on interim command detection
+    if (isNavigateToAnalysisCommand(lower)) {
+      console.log('[Surroundings] Fast interim navigation to analysis:', lower);
+      setInterimSpeech('');
+      markCommandHandled(lower);
+      if (isWatchingRef.current) {
+        stopWatchingInternal();
+      }
+      stopSpeaking();
+      speakText('Switching to Visual and Video Analysis. You can upload an image or video, or ask questions.');
+      onNavigateTab?.('analysis');
+      return;
+    }
 
     // Fast-path: Start surroundings immediately on first detected syllable of "start surrounding..."
     if (isStartCommand(lower) && !isWatchingRef.current) {
@@ -505,14 +533,13 @@ export function SurroundingsMode({
       return;
     }
 
-    // 1. Navigation triggers
-    if (
-      lower.includes('switch to visual analysis') ||
-      lower.includes('open visual analysis') ||
-      lower.includes('go to visual analysis') ||
-      lower.includes('visual analysis')
-    ) {
-      speakText('Switching to Visual Analysis.');
+    // 1. Navigation triggers (Visual & Video Analysis Tab)
+    if (isNavigateToAnalysisCommand(lower)) {
+      if (isWatchingRef.current) {
+        stopWatchingInternal();
+      }
+      stopSpeaking();
+      speakText('Switching to Visual and Video Analysis. You can upload an image or video, or ask questions.');
       onNavigateTab?.('analysis');
       return;
     }
