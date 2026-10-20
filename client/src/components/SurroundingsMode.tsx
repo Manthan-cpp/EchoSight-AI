@@ -671,16 +671,6 @@ export function SurroundingsMode() {
           </button>
         </form>
       </section>
-
-      {/* Constraints Notice */}
-      <section aria-labelledby="spec-heading" className="card border-l-4 border-l-[var(--accent-primary)] bg-[var(--bg-surface)]">
-        <h4 id="spec-heading" className="text-xs font-bold uppercase tracking-wider text-[var(--text-primary)] mb-1">
-          Alexa+ Voice Client Operational Guarantee
-        </h4>
-        <p className="text-xs text-[var(--text-secondary)]">
-          Runs on a strictly paced 5-second loop (~12 calls/min). In-memory frame change detection prevents redundant calls when the camera is stationary. Frames are never written to disk or stored beyond the active session.
-        </p>
-      </section>
     </div>
   );
 }
