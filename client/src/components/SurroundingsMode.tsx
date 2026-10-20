@@ -19,6 +19,7 @@ export function SurroundingsMode() {
   const [cadenceSeconds] = useState<number>(5);
   const [sessionSeconds, setSessionSeconds] = useState<number>(0);
   const [followupText, setFollowupText] = useState<string>('');
+  const [interimSpeech, setInterimSpeech] = useState<string>('');
   const [transcripts, setTranscripts] = useState<TranscriptItem[]>([]);
 
   const MAX_SESSION_SECONDS = 300; // 5-minute maximum continuous session safety bound
@@ -371,10 +372,19 @@ export function SurroundingsMode() {
    */
   const handleVoiceCommand = async (command: string) => {
     const lower = command.toLowerCase().trim();
-    addTranscript(`Heard voice command: "${command}"`, 'followup');
+    setInterimSpeech('');
+    addTranscript(`Heard: "${command}"`, 'followup');
 
     // 1. Stop control triggers
-    if (lower.includes('stop') || lower.includes("that's enough") || lower.includes('pause')) {
+    if (
+      lower.includes('stop') ||
+      lower.includes('pause') ||
+      lower.includes("that's enough") ||
+      lower.includes('quiet') ||
+      lower.includes('shut up') ||
+      lower.includes('be quiet') ||
+      lower.includes('silence')
+    ) {
       stopWatching();
       return;
     }
@@ -383,7 +393,10 @@ export function SurroundingsMode() {
     if (
       lower.includes('start surroundings') ||
       lower.includes('describe surroundings') ||
-      lower.includes('start watching')
+      lower.includes('start watching') ||
+      lower === 'start' ||
+      lower.includes('resume') ||
+      lower.includes('continue')
     ) {
       if (!isWatchingRef.current) {
         startWatching();
@@ -396,7 +409,8 @@ export function SurroundingsMode() {
       lower.includes('tell me everything') ||
       lower.includes('more detail') ||
       lower.includes('all details') ||
-      lower.includes('exhaustive')
+      lower.includes('exhaustive') ||
+      lower.includes('describe in detail')
     ) {
       await executeFollowupQuery(
         'Please describe everything in the current view in exhaustive, patient, line-by-line detail, including spatial positioning, textures, objects, and any navigation obstacles.'
@@ -404,19 +418,21 @@ export function SurroundingsMode() {
       return;
     }
 
-    // 4. Standard interrupting follow-up question
+    // 4. Any other speech is treated as a direct question
     await executeFollowupQuery(command);
   };
 
   const toggleVoiceControl = () => {
     if (isVoiceActive) {
       stopListening(setIsVoiceActive);
+      setInterimSpeech('');
       speakText('Voice control paused.');
     } else {
       const started = startListening(
         (transcript) => handleVoiceCommand(transcript),
         setIsVoiceActive,
-        (err) => addTranscript(err, 'system')
+        (err) => addTranscript(err, 'system'),
+        (interim) => setInterimSpeech(interim)
       );
       if (started) {
         speakText('Voice control active. You can speak commands or questions.');
@@ -577,6 +593,15 @@ export function SurroundingsMode() {
             {transcripts.length} update{transcripts.length === 1 ? '' : 's'}
           </span>
         </div>
+
+        {/* Real-time Voice Detection Banner */}
+        {interimSpeech && (
+          <div className="p-2.5 rounded-[var(--radius-sm)] border border-[var(--status-listening-border)] bg-[var(--status-listening-bg)] text-[var(--status-listening-text)] text-xs flex items-center gap-2">
+            <Mic className="h-3.5 w-3.5 animate-pulse" aria-hidden="true" />
+            <span className="font-semibold uppercase tracking-wider">Hearing:</span>
+            <span className="italic">&quot;{interimSpeech}...&quot;</span>
+          </div>
+        )}
 
         {/* Real Empty State */}
         {transcripts.length === 0 ? (
