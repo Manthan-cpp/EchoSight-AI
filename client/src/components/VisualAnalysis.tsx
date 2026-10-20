@@ -231,12 +231,12 @@ export function VisualAnalysis({
     speakText('Opening file picker. Tap anywhere on screen or press Enter to choose your file.');
   };
 
-  const handleCapturePhotoFromCamera = async () => {
+  const handleCapturePhotoFromCamera = async (autoAnalyze: boolean = false) => {
     if (isCapturingPhotoRef.current) return;
     isCapturingPhotoRef.current = true;
 
     stopSpeaking();
-    speakText('Accessing camera. Please hold your document or object steady...');
+    speakText(autoAnalyze ? 'Accessing camera to take photo and analyze...' : 'Accessing camera. Please hold your document or object steady...');
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
@@ -264,7 +264,9 @@ export function VisualAnalysis({
         try {
           if (!blob) return;
           const file = new File([blob], `camera-photo-${Date.now()}.jpg`, { type: 'image/jpeg' });
+          selectedFileRef.current = file;
           setSelectedFile(file);
+          detectedTypeRef.current = 'image';
           setDetectedType('image');
           setPreviewUrl(URL.createObjectURL(file));
           setToolResult(null);
@@ -278,7 +280,11 @@ export function VisualAnalysis({
           fileBase64Ref.current = base64;
           setFileBase64(base64);
 
-          speakText('Photo captured from camera. Say "analyze this" to begin exhaustive analysis.');
+          if (autoAnalyze) {
+            handleRunAnalysis();
+          } else {
+            speakText('Photo captured from camera. Say "analyze it" or "analyze this" to begin exhaustive analysis.');
+          }
         } finally {
           isCapturingPhotoRef.current = false;
         }
@@ -321,6 +327,7 @@ export function VisualAnalysis({
     setInterruptionNotice(null);
     stopSpeaking();
     setIsSpeaking(false);
+    speakText('Analyzing your media in exhaustive detail...');
 
     try {
       let result: ToolResult;
@@ -472,23 +479,43 @@ export function VisualAnalysis({
   const isCameraCaptureCommand = (text: string): boolean => {
     const lower = text.toLowerCase().trim();
     return (
-      /\b(take|snap|capture|use)\b.*\b(photo|picture|camera|image)\b/i.test(lower) ||
-      /^(take a photo|snap photo|use camera|capture photo|take photo)$/i.test(lower)
+      /\b(take|snap|capture|use)\b.*\b(photo|picture|camera|image|snap)\b/i.test(lower) ||
+      /^(take a photo|snap photo|use camera|capture photo|take photo|take snap|capture snap|snap|capture)$/i.test(lower)
+    );
+  };
+
+  const isAnalyzeCommand = (text: string): boolean => {
+    const lower = text.toLowerCase().trim();
+    return (
+      // "analyze", "analyze it", "analyze this", "analyze photo", "analyze image", "analyze snap", "analyze video"
+      /\banaly[zs]e\b/i.test(lower) ||
+      // "explain this", "explain it", "explain image", "explain photo", "explain"
+      /\b(explain|describe|read|deconstruct|inspect|examine)\s*(this|it|image|photo|video|picture|snap|file|scorecard|chart|match)?\b/i.test(lower) ||
+      // "start analysis", "run analysis", "begin analysis"
+      /\b(start|run|begin|do)\s*(analysis|reasoning|walkthrough)\b/i.test(lower) ||
+      // "what's in this", "what is this", "what is in this photo"
+      /\bwhat('s| is)\s*(in this|this|it|in the image|in the photo|here)\b/i.test(lower) ||
+      // "tell me about this", "tell me what you see"
+      /\btell me (about this|what('s| is) (in this|here)|what you see)\b/i.test(lower) ||
+      // Exact single words
+      /^(analyze|analyse|explain|describe|read)$/i.test(lower)
     );
   };
 
   const isFileUploadCommand = (text: string): boolean => {
     const lower = text.toLowerCase().trim();
+    // Do not trigger file upload if media is already loaded and user is requesting analysis
+    if (fileBase64Ref.current && isAnalyzeCommand(lower)) {
+      return false;
+    }
     return (
       // "open file picker", "open the file picker", "open picker", "file picker"
       /\b(open|show|launch|start|display)\b.*\b(file\s*picker|picker|chooser|dialog|files?)\b/i.test(lower) ||
       /\bfile\s*picker\b/i.test(lower) ||
       // "upload / choose / select / pick / browse ... file / image / video / photo / chart"
       /\b(upload|choose|select|pick|browse|load)\b.*\b(file|image|video|photo|picture|media|chart|scorecard|graphic)\b/i.test(lower) ||
-      // "I want to analyze / I want you to analyze / analyze an image / video / photo"
-      /\b(analyze|inspect|examine)\b.*\b(image|video|photo|picture|media|chart|scorecard|file)\b/i.test(lower) ||
-      // "I want to upload / I want to choose / I want to analyze"
-      /\bwant to\b.*\b(analyze|upload|choose|select|pick)\b/i.test(lower) ||
+      // "I want to upload / I want to choose"
+      /\bwant to\b.*\b(upload|choose|select|pick)\b/i.test(lower) ||
       // Short phrases
       /^(upload|choose file|select file|pick file|browse|open picker|file picker)$/i.test(lower)
     );
@@ -526,18 +553,37 @@ export function VisualAnalysis({
     // 1. Camera snap command by voice (live capture without file picker dialog)
     if (isCameraCaptureCommand(lower)) {
       markCommandHandled(command);
-      handleCapturePhotoFromCamera();
+      const shouldAutoAnalyze =
+        lower.includes('analyze') ||
+        lower.includes('analyse') ||
+        lower.includes('explain') ||
+        lower.includes('describe');
+      handleCapturePhotoFromCamera(shouldAutoAnalyze);
       return;
     }
 
-    // 2. File selection by voice ("I want to analyze an image/video", "open file picker", "upload file")
+    // 2. Trigger initial exhaustive analysis by voice when media is loaded
+    if (fileBase64Ref.current && isAnalyzeCommand(lower)) {
+      markCommandHandled(command);
+      handleRunAnalysis();
+      return;
+    }
+
+    // 2b. If no media is loaded and user asks to analyze, prompt with guidance
+    if (!fileBase64Ref.current && isAnalyzeCommand(lower)) {
+      markCommandHandled(command);
+      speakText('No media loaded yet. Say "take a photo" or "open file picker" to select media.');
+      return;
+    }
+
+    // 3. File selection by voice ("I want to choose a file", "open file picker", "upload file")
     if (isFileUploadCommand(lower)) {
       markCommandHandled(command);
       triggerFilePicker();
       return;
     }
 
-    // 3. Navigation triggers (Surroundings Mode Tab)
+    // 4. Navigation triggers (Surroundings Mode Tab)
     if (isNavigateToSurroundingsCommand(lower)) {
       markCommandHandled(command);
       narrationSupersededRef.current = true;
@@ -548,7 +594,7 @@ export function VisualAnalysis({
       return;
     }
 
-    // 4. Stop / Silence audio commands
+    // 5. Stop / Silence audio commands
     if (
       lower.includes('stop') ||
       lower.includes('pause') ||
@@ -564,21 +610,6 @@ export function VisualAnalysis({
       setIsSpeaking(false);
       setInterruptionNotice('Silenced audio on user voice command.');
       return;
-    }
-
-    // 5. Trigger initial analysis by voice
-    if (
-      lower.includes('analyze this') ||
-      lower.includes('start analysis') ||
-      lower.includes('explain this') ||
-      lower.includes('describe this') ||
-      lower.includes('read this')
-    ) {
-      if (fileBase64Ref.current && !isAnalyzingRef.current) {
-        markCommandHandled(command);
-        handleRunAnalysis();
-        return;
-      }
     }
 
     // 6. Any other spoken input is treated as a direct question that interrupts ongoing narration!
@@ -755,7 +786,7 @@ export function VisualAnalysis({
               <div className="flex items-center justify-center">
                 <button
                   type="button"
-                  onClick={handleCapturePhotoFromCamera}
+                  onClick={() => handleCapturePhotoFromCamera()}
                   className="btn-secondary text-xs flex items-center gap-2 py-2 px-4 rounded-[var(--radius-sm)]"
                   aria-label="Take photo with camera to analyze"
                 >
@@ -787,7 +818,7 @@ export function VisualAnalysis({
                 </div>
                 <div className="flex items-center gap-3">
                   <button
-                    onClick={handleCapturePhotoFromCamera}
+                    onClick={() => handleCapturePhotoFromCamera()}
                     className="text-xs font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)] flex items-center gap-1"
                     title="Take photo with camera"
                   >
