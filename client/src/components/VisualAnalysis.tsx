@@ -12,6 +12,7 @@ import {
   AlertCircle,
   FileImage,
   Video as VideoIcon,
+  Camera,
 } from 'lucide-react';
 import { callTool, type ToolResult } from '../services/mcpClient';
 import {
@@ -65,6 +66,7 @@ export function VisualAnalysis({
   const [contextHistory, setContextHistory] = useState<string>('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [interruptionNotice, setInterruptionNotice] = useState<string | null>(null);
+  const [isAwaitingFileTap, setIsAwaitingFileTap] = useState<boolean>(false);
 
   // Synchronization and concurrency locks to guarantee user questions take priority
   const queryTokenRef = useRef<number>(0);
@@ -106,6 +108,44 @@ export function VisualAnalysis({
       setIsSpeaking(speaking);
     });
   }, []);
+
+  // User activation bridge: when file picker is requested by voice, any screen tap or Space/Enter triggers native file dialog
+  useEffect(() => {
+    if (!isAwaitingFileTap) return;
+
+    const handleUserGesture = (e: Event) => {
+      if (e.target === fileInputRef.current) return;
+      try {
+        fileInputRef.current?.click();
+      } catch (err) {
+        console.warn('[VisualAnalysis] Gesture file click failed:', err);
+      }
+      setIsAwaitingFileTap(false);
+    };
+
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+        e.preventDefault();
+        fileInputRef.current?.click();
+        setIsAwaitingFileTap(false);
+      }
+    };
+
+    window.addEventListener('click', handleUserGesture, { once: true });
+    window.addEventListener('touchstart', handleUserGesture, { once: true });
+    window.addEventListener('keydown', handleKey, { once: true });
+
+    const timeout = setTimeout(() => {
+      setIsAwaitingFileTap(false);
+    }, 20000);
+
+    return () => {
+      window.removeEventListener('click', handleUserGesture);
+      window.removeEventListener('touchstart', handleUserGesture);
+      window.removeEventListener('keydown', handleKey);
+      clearTimeout(timeout);
+    };
+  }, [isAwaitingFileTap]);
 
   // Clean up speech on unmount
   useEffect(() => {
@@ -157,6 +197,71 @@ export function VisualAnalysis({
       reader.onerror = reject;
       reader.readAsDataURL(file);
     });
+  };
+
+  const triggerFilePicker = () => {
+    setInterimSpeech('');
+    stopSpeaking();
+    setIsAwaitingFileTap(true);
+
+    try {
+      fileInputRef.current?.click();
+    } catch (e) {
+      console.warn('[VisualAnalysis] Direct input click blocked by browser:', e);
+    }
+
+    speakText('Opening file picker. Tap anywhere on screen or press Enter to choose your file.');
+  };
+
+  const handleCapturePhotoFromCamera = async () => {
+    stopSpeaking();
+    speakText('Accessing camera. Please hold your document or object steady...');
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      });
+
+      const video = document.createElement('video');
+      video.srcObject = stream;
+      await video.play();
+
+      // Wait a brief moment for camera exposure adjustment
+      await new Promise((r) => setTimeout(r, 450));
+
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth || 640;
+      canvas.height = video.videoHeight || 480;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      }
+
+      stream.getTracks().forEach((track) => track.stop());
+
+      canvas.toBlob(async (blob) => {
+        if (!blob) return;
+        const file = new File([blob], `camera-photo-${Date.now()}.jpg`, { type: 'image/jpeg' });
+        setSelectedFile(file);
+        setDetectedType('image');
+        setPreviewUrl(URL.createObjectURL(file));
+        setToolResult(null);
+        setFollowups([]);
+        setContextHistory('');
+        setErrorMessage(null);
+        setInterruptionNotice(null);
+        setIsAwaitingFileTap(false);
+
+        const base64 = await readFileAsBase64(file);
+        fileBase64Ref.current = base64;
+        setFileBase64(base64);
+
+        speakText('Photo captured from camera. Say "analyze this" to begin exhaustive analysis.');
+      }, 'image/jpeg', 0.85);
+    } catch (err: any) {
+      console.warn('[VisualAnalysis] Camera capture failed:', err);
+      speakText('Could not access camera. Please choose a file instead.');
+    }
   };
 
   const handleReset = () => {
@@ -338,11 +443,28 @@ export function VisualAnalysis({
     );
   };
 
+  const isCameraCaptureCommand = (text: string): boolean => {
+    const lower = text.toLowerCase().trim();
+    return (
+      /\b(take|snap|capture|use)\b.*\b(photo|picture|camera|image)\b/i.test(lower) ||
+      /^(take a photo|snap photo|use camera|capture photo|take photo)$/i.test(lower)
+    );
+  };
+
   const isFileUploadCommand = (text: string): boolean => {
     const lower = text.toLowerCase().trim();
     return (
-      /\b(upload|choose|select|pick|browse)\b.*\b(file|image|video|photo|media)\b/i.test(lower) ||
-      /^(upload|choose file|select file|pick file|browse)$/i.test(lower)
+      // "open file picker", "open the file picker", "open picker", "file picker"
+      /\b(open|show|launch|start|display)\b.*\b(file\s*picker|picker|chooser|dialog|files?)\b/i.test(lower) ||
+      /\bfile\s*picker\b/i.test(lower) ||
+      // "upload / choose / select / pick / browse ... file / image / video / photo / chart"
+      /\b(upload|choose|select|pick|browse|load)\b.*\b(file|image|video|photo|picture|media|chart|scorecard|graphic)\b/i.test(lower) ||
+      // "I want to analyze / I want you to analyze / analyze an image / video / photo"
+      /\b(analyze|inspect|examine)\b.*\b(image|video|photo|picture|media|chart|scorecard|file)\b/i.test(lower) ||
+      // "I want to upload / I want to choose / I want to analyze"
+      /\bwant to\b.*\b(analyze|upload|choose|select|pick)\b/i.test(lower) ||
+      // Short phrases
+      /^(upload|choose file|select file|pick file|browse|open picker|file picker)$/i.test(lower)
     );
   };
 
@@ -371,16 +493,19 @@ export function VisualAnalysis({
       return;
     }
 
-    // 1. File selection by voice (for blind/hands-free users)
-    if (isFileUploadCommand(lower)) {
-      setInterimSpeech('');
-      stopSpeaking();
-      speakText('Opening file picker. Please choose your image or video.');
-      fileInputRef.current?.click();
+    // 1. Camera snap command by voice (live capture without file picker dialog)
+    if (isCameraCaptureCommand(lower)) {
+      handleCapturePhotoFromCamera();
       return;
     }
 
-    // 2. Navigation triggers (Surroundings Mode Tab)
+    // 2. File selection by voice ("I want to analyze an image/video", "open file picker", "upload file")
+    if (isFileUploadCommand(lower)) {
+      triggerFilePicker();
+      return;
+    }
+
+    // 3. Navigation triggers (Surroundings Mode Tab)
     if (isNavigateToSurroundingsCommand(lower)) {
       narrationSupersededRef.current = true;
       stopSpeaking();
@@ -390,7 +515,7 @@ export function VisualAnalysis({
       return;
     }
 
-    // 3. Stop / Silence audio commands
+    // 4. Stop / Silence audio commands
     if (
       lower.includes('stop') ||
       lower.includes('pause') ||
@@ -407,7 +532,7 @@ export function VisualAnalysis({
       return;
     }
 
-    // 4. Trigger initial analysis by voice
+    // 5. Trigger initial analysis by voice
     if (
       lower.includes('analyze this') ||
       lower.includes('start analysis') ||
@@ -421,7 +546,7 @@ export function VisualAnalysis({
       }
     }
 
-    // 5. Any other spoken input is treated as a direct question that interrupts ongoing narration!
+    // 6. Any other spoken input is treated as a direct question that interrupts ongoing narration!
     handleAskFollowup(command);
   };
 
@@ -431,6 +556,22 @@ export function VisualAnalysis({
   const handleInterimSpeech = (interim: string) => {
     setInterimSpeech(interim);
     const lower = interim.toLowerCase().trim();
+
+    // Fast-path: Interim camera snap
+    if (isCameraCaptureCommand(lower)) {
+      console.log('[VisualAnalysis] Fast interim camera snap trigger:', lower);
+      markCommandHandled(lower);
+      handleCapturePhotoFromCamera();
+      return;
+    }
+
+    // Fast-path: Interim file selection trigger
+    if (isFileUploadCommand(lower)) {
+      console.log('[VisualAnalysis] Fast interim file upload trigger:', lower);
+      markCommandHandled(lower);
+      triggerFilePicker();
+      return;
+    }
 
     // Fast-path: Interim navigation to Surroundings Mode
     if (isNavigateToSurroundingsCommand(lower)) {
@@ -442,17 +583,6 @@ export function VisualAnalysis({
       setIsSpeaking(false);
       speakText('Switching to Surroundings Mode. Say "start surroundings" to begin.');
       onNavigateTab?.('surroundings');
-      return;
-    }
-
-    // Fast-path: Interim file selection trigger
-    if (isFileUploadCommand(lower)) {
-      console.log('[VisualAnalysis] Fast interim file upload trigger:', lower);
-      setInterimSpeech('');
-      markCommandHandled(lower);
-      stopSpeaking();
-      speakText('Opening file picker. Please choose your image or video.');
-      fileInputRef.current?.click();
       return;
     }
 
@@ -566,19 +696,55 @@ export function VisualAnalysis({
 
         {/* Unified Upload / Drop Area */}
         <div className="space-y-4">
-          {!selectedFile ? (
-            <label
-              htmlFor="visual-file-input"
-              className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-[var(--border-neutral)] rounded-[var(--radius-md)] bg-[var(--bg-subtle)] hover:bg-[var(--bg-surface)] cursor-pointer transition-colors text-center"
+          {/* Active Voice Activation Banner when waiting for user tap/key */}
+          {isAwaitingFileTap && (
+            <button
+              type="button"
+              onClick={() => {
+                fileInputRef.current?.click();
+                setIsAwaitingFileTap(false);
+              }}
+              className="w-full p-4 rounded-[var(--radius-md)] border-2 border-[var(--accent-primary)] bg-[var(--status-listening-bg)] text-[var(--text-primary)] flex items-center justify-between text-left transition-colors"
+              aria-label="Tap to open file chooser dialog"
             >
-              <Upload className="h-10 w-10 text-[var(--text-secondary)] mb-2" aria-hidden="true" />
-              <span className="text-sm font-semibold text-[var(--text-primary)]">
-                Select or Drop Any Media (Image, Chart, Scorecard, or Video Clip)
-              </span>
-              <span className="text-xs text-[var(--text-secondary)] mt-1">
-                Voice-Ready: Say "choose file" to open picker • Images (JPEG, PNG, WebP up to 10MB) • Videos (MP4, WebM up to 20MB)
-              </span>
-            </label>
+              <div className="flex items-center gap-3">
+                <Upload className="h-6 w-6 text-[var(--accent-primary)] shrink-0" aria-hidden="true" />
+                <div>
+                  <p className="font-semibold text-sm text-[var(--text-primary)]">Tap here or press Enter to open File Picker</p>
+                  <p className="text-xs text-[var(--text-secondary)]">Voice command detected. Tap anywhere on screen or press Enter to choose your media.</p>
+                </div>
+              </div>
+              <span className="btn-primary text-xs py-1.5 px-3 shrink-0">Open Picker</span>
+            </button>
+          )}
+
+          {!selectedFile ? (
+            <div className="space-y-3">
+              <label
+                htmlFor="visual-file-input"
+                className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-[var(--border-neutral)] rounded-[var(--radius-md)] bg-[var(--bg-subtle)] hover:bg-[var(--bg-surface)] cursor-pointer transition-colors text-center"
+              >
+                <Upload className="h-10 w-10 text-[var(--text-secondary)] mb-2" aria-hidden="true" />
+                <span className="text-sm font-semibold text-[var(--text-primary)]">
+                  Select or Drop Any Media (Image, Chart, Scorecard, or Video Clip)
+                </span>
+                <span className="text-xs text-[var(--text-secondary)] mt-1">
+                  Voice-Ready: Say "choose file" or "analyze image" • Images (JPEG, PNG, WebP up to 10MB) • Videos (MP4, WebM up to 20MB)
+                </span>
+              </label>
+
+              <div className="flex items-center justify-center">
+                <button
+                  type="button"
+                  onClick={handleCapturePhotoFromCamera}
+                  className="btn-secondary text-xs flex items-center gap-2 py-2 px-4 rounded-[var(--radius-sm)]"
+                  aria-label="Take photo with camera to analyze"
+                >
+                  <Camera className="h-4 w-4 text-[var(--accent-primary)]" aria-hidden="true" />
+                  <span>Take Photo with Camera (or say "take a photo")</span>
+                </button>
+              </div>
+            </div>
           ) : (
             <div className="border border-[var(--border-neutral)] rounded-[var(--radius-md)] p-4 bg-[var(--bg-surface)] space-y-4">
               <div className="flex items-center justify-between border-b border-[var(--border-neutral)] pb-3">
@@ -600,12 +766,22 @@ export function VisualAnalysis({
                   </span>
                   <span className="text-xs text-[var(--text-secondary)]">({(selectedFile.size / 1024).toFixed(0)} KB)</span>
                 </div>
-                <button
-                  onClick={handleReset}
-                  className="text-xs font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-                >
-                  Change File
-                </button>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={handleCapturePhotoFromCamera}
+                    className="text-xs font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)] flex items-center gap-1"
+                    title="Take photo with camera"
+                  >
+                    <Camera className="h-3.5 w-3.5" aria-hidden="true" />
+                    <span>Snap Photo</span>
+                  </button>
+                  <button
+                    onClick={handleReset}
+                    className="text-xs font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                  >
+                    Change File
+                  </button>
+                </div>
               </div>
 
               {/* Preview */}
