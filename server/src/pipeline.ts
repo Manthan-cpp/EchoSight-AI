@@ -320,11 +320,11 @@ export async function describeSurroundingsFrame(
 ): Promise<PipelineResult> {
   // Check frame difference
   const diff = calculateFrameDifference(prevFrameBuffer, frameBuffer);
-  // If frame changed less than 3% and we had a previous frame, skip API call to conserve quota
-  if (prevFrameBuffer && diff < 0.03) {
+  // If frame changed less than 6% and we had a previous frame, skip API call to conserve quota and avoid repetitive speech
+  if (prevFrameBuffer && diff < 0.06) {
     return {
-      spokenText: 'Your surroundings remain unchanged.',
-      detailedText: 'Frame difference is negligible (<3%). Skipped redundant LLM call to preserve quota.',
+      spokenText: 'Path remains clear.',
+      detailedText: 'Frame difference is negligible (<6%). Skipped redundant LLM call.',
       confidence: 'high',
       isUnchanged: true,
       proactiveInsight: 'Scene is static.',
@@ -332,11 +332,20 @@ export async function describeSurroundingsFrame(
   }
 
   const ai = getAiClient();
-  const prompt = `This is a live camera frame from Surroundings Mode.
-Describe what is currently visible in front of the user in 2 to 3 calm, concise sentences structured for listening.
-Mention relative positions (e.g. "Just ahead of you is...", "To your right...").
-Highlight any obstacles, objects, or people.
-${priorContext ? `Recent context from prior frame: ${priorContext}` : ''}`;
+  const prompt = `You are EchoSight delivering real-time walking assistance to a blind user.
+CRITICAL MANDATE FOR WALKING SPEED:
+- Keep your response extremely brief: strictly 1 to 2 short, punchy sentences (maximum 15 to 20 words total).
+- State ONLY what is vital for safe movement right now:
+  1. Is the walkway ahead open or blocked?
+  2. Note any immediate obstacle or opening with relative direction ("straight ahead", "to your right", "to your left").
+- Do NOT describe wallpaper patterns, colors, lighting, or distant background items.
+${
+  priorContext
+    ? `Prior observation was: "${priorContext}".
+If the walkway is largely the same or remains open, do NOT repeat the previous description. Say strictly: "Path ahead remains clear." or "Still clear ahead." (under 4 words).`
+    : ''
+}
+Format as clean, rapid spoken text.`;
 
   const response = await generateWithRetry({
     model: getModelName(),
@@ -383,6 +392,11 @@ export async function answerFollowup(
     throw new Error('Follow-up question cannot be empty.');
   }
 
+  const isExhaustive = /tell me everything|exhaustive|all details|deep dive|explain in detail/i.test(question);
+  const brevityInstruction = isExhaustive
+    ? 'Provide an exhaustive, structured, line-by-line description covering all elements.'
+    : 'Provide a direct, punchy answer in strictly 1 to 2 short sentences (under 20 words). Answer immediately without introductory filler or restating the entire prior scene.';
+
   const prompt = `You are EchoSight answering a follow-up question from a blind or low-vision user about a previously described visual scene or scorecard.
 Prior Context / Recent Description:
 """
@@ -391,7 +405,7 @@ ${priorContext || 'No previous context recorded.'}
 
 User Follow-Up Question: "${question}"
 
-Provide a direct, concise, spoken response that specifically answers the question without repeating the entire prior description unless necessary. Maintain calm, clear speech phrasing.`;
+${brevityInstruction} Maintain calm, clear speech phrasing.`;
 
   const parts: any[] = [{ text: prompt }];
 

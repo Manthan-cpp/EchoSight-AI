@@ -148,29 +148,42 @@ export function SurroundingsMode() {
         return;
       }
 
+      const scheduleNext = () => {
+        if (isWatchingRef.current && currentSessionId === sessionIdRef.current) {
+          if (cadenceTimerRef.current) clearTimeout(cadenceTimerRef.current);
+          cadenceTimerRef.current = setTimeout(
+            () => processCadenceCycle(currentSessionId),
+            cadenceSeconds * 1000
+          );
+        }
+      };
+
       if (result.isUnchanged) {
         console.log('[Surroundings] Scene is static; frame difference below threshold.');
+        // Do not speak repetitive chatter when view is static; quietly wait for next cadence
+        scheduleNext();
       } else {
         priorContextRef.current = result.spokenText;
         addTranscript(result.spokenText, 'observation');
-        // Speak aloud per voice-first accessibility mandate
-        speakText(result.spokenText);
+        // Speak aloud, and ONLY schedule the next cycle AFTER speech has finished!
+        speakText(result.spokenText, () => {
+          scheduleNext();
+        });
       }
 
       prevFrameRef.current = currentFrameBase64;
     } catch (err: any) {
       console.warn('[Surroundings] Cycle processing error:', err.message);
-    } finally {
-      isProcessingRef.current = false;
-      setIsAnalyzingFrame(false);
-
-      // Only schedule the NEXT cycle 5 seconds after this cycle has finished!
+      // On error, schedule next retry after cadence
       if (isWatchingRef.current && currentSessionId === sessionIdRef.current) {
         cadenceTimerRef.current = setTimeout(
           () => processCadenceCycle(currentSessionId),
           cadenceSeconds * 1000
         );
       }
+    } finally {
+      isProcessingRef.current = false;
+      setIsAnalyzingFrame(false);
     }
   };
 
@@ -326,21 +339,30 @@ export function SurroundingsMode() {
       });
 
       addTranscript(result.spokenText, 'observation');
-      speakText(result.spokenText);
+      speakText(result.spokenText, () => {
+        // Resume regular cadence 5 seconds AFTER answer speech completes
+        if (isWatchingRef.current) {
+          if (cadenceTimerRef.current) clearTimeout(cadenceTimerRef.current);
+          cadenceTimerRef.current = setTimeout(
+            () => processCadenceCycle(sessionIdRef.current),
+            cadenceSeconds * 1000
+          );
+        }
+      });
     } catch (err: any) {
       addTranscript(`Could not resolve question: ${err.message}`, 'system');
-      speakText('Sorry, I had trouble answering that.');
+      speakText('Sorry, I had trouble answering that.', () => {
+        if (isWatchingRef.current) {
+          if (cadenceTimerRef.current) clearTimeout(cadenceTimerRef.current);
+          cadenceTimerRef.current = setTimeout(
+            () => processCadenceCycle(sessionIdRef.current),
+            cadenceSeconds * 1000
+          );
+        }
+      });
     } finally {
       isProcessingRef.current = false;
       setIsAnalyzingFrame(false);
-
-      // Resume regular cadence 5 seconds after answering
-      if (isWatchingRef.current) {
-        cadenceTimerRef.current = setTimeout(
-          () => processCadenceCycle(sessionIdRef.current),
-          cadenceSeconds * 1000
-        );
-      }
     }
   };
 
