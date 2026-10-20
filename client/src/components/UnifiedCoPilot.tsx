@@ -15,6 +15,9 @@ import {
   CheckCircle2,
   Send,
   Eye,
+  MapPin,
+  Trash2,
+  X,
 } from 'lucide-react';
 import { callTool, type ToolResult } from '../services/mcpClient';
 import {
@@ -30,10 +33,19 @@ import {
 
 export type WorkspaceMode = 'standby' | 'radar' | 'inspection';
 
+export interface SpatialPin {
+  id: string;
+  item: string;
+  location: string;
+  landmark: string;
+  timestamp: string;
+  createdAt: number;
+}
+
 interface FeedItem {
   id: string;
   timestamp: string;
-  type: 'radar' | 'analysis' | 'followup' | 'system';
+  type: 'radar' | 'analysis' | 'followup' | 'system' | 'spatial';
   title?: string;
   content: string;
   proactiveInsight?: string;
@@ -88,6 +100,19 @@ export function UnifiedCoPilot({
   const [interruptionNotice, setInterruptionNotice] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  // --- Spatial Memory State (Persistent 3D Object Pinning) ---
+  const [spatialPins, setSpatialPins] = useState<SpatialPin[]>(() => {
+    try {
+      const saved = localStorage.getItem('echosight_spatial_pins');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {
+      console.warn('[UnifiedCoPilot] Failed to load spatial pins from localStorage:', e);
+      return [];
+    }
+  });
+  const [isPinningObject, setIsPinningObject] = useState<boolean>(false);
+  const [isLocatingObject, setIsLocatingObject] = useState<boolean>(false);
+
   // --- Synchronized Refs (Avoid stale closures in speech & timer callbacks) ---
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -108,6 +133,17 @@ export function UnifiedCoPilot({
   const detectedTypeRef = useRef<'image' | 'video'>('image');
   const isCapturingPhotoRef = useRef<boolean>(false);
   const queryTokenRef = useRef<number>(0);
+  const spatialPinsRef = useRef<SpatialPin[]>(spatialPins);
+
+  // Synchronize spatial pins with localStorage and ref
+  useEffect(() => {
+    spatialPinsRef.current = spatialPins;
+    try {
+      localStorage.setItem('echosight_spatial_pins', JSON.stringify(spatialPins));
+    } catch (e) {
+      console.warn('[UnifiedCoPilot] Failed to save spatial pins:', e);
+    }
+  }, [spatialPins]);
 
   // Synchronize state to refs
   useEffect(() => {
@@ -678,6 +714,192 @@ export function UnifiedCoPilot({
   };
 
   // =========================================================================
+  // SPATIAL MEMORY & OBJECT PINNING ENGINE
+  // =========================================================================
+
+  const handlePinObject = async (itemName?: string) => {
+    if (isPinningObject) return;
+    setIsPinningObject(true);
+    setErrorMessage(null);
+    stopSpeaking();
+
+    const targetName = itemName && itemName.trim() ? itemName.trim() : 'object in view';
+    speakText(`Pinning ${targetName}. Please hold steady while I locate permanent landmarks...`);
+
+    try {
+      let base64: string | null = null;
+
+      // 1. Try currently active camera
+      if (isCameraActive && videoRef.current) {
+        base64 = captureFrameBase64();
+      }
+
+      // 2. If no active camera, check if inspection media is loaded
+      if (!base64 && fileBase64Ref.current) {
+        base64 = fileBase64Ref.current;
+      }
+
+      // 3. Otherwise capture a quick frame from environment camera
+      if (!base64) {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false,
+        });
+        const video = document.createElement('video');
+        video.srcObject = stream;
+        await video.play();
+        await new Promise((r) => setTimeout(r, 450));
+
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth || 640;
+        canvas.height = video.videoHeight || 480;
+        const ctx = canvas.getContext('2d');
+        if (ctx) ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        stream.getTracks().forEach((track) => track.stop());
+
+        base64 = canvas.toDataURL('image/jpeg', 0.82).split(',')[1];
+      }
+
+      if (!base64) {
+        throw new Error('Unable to capture camera frame for spatial pinning.');
+      }
+
+      const result = await callTool('pin_spatial_object', {
+        image_base64: base64,
+        item_name: targetName,
+        mime_type: 'image/jpeg',
+      });
+
+      const detectedItem =
+        targetName === 'object in view' && result.proactiveInsight
+          ? result.proactiveInsight.replace(/^pinned:\s*/i, '')
+          : targetName.charAt(0).toUpperCase() + targetName.slice(1);
+
+      const newPin: SpatialPin = {
+        id: `pin-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        item: detectedItem,
+        location: result.spokenText,
+        landmark: result.proactiveInsight || 'Room Landmark',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        createdAt: Date.now(),
+      };
+
+      setSpatialPins((prev) => [
+        newPin,
+        ...prev.filter((p) => p.item.toLowerCase() !== detectedItem.toLowerCase()),
+      ]);
+
+      addFeedItem({
+        type: 'spatial',
+        title: `Pinned Object: ${newPin.item}`,
+        content: result.spokenText,
+        proactiveInsight: newPin.landmark,
+        detailedText: result.detailedText,
+      });
+
+      speakText(result.spokenText);
+    } catch (err: any) {
+      console.warn('[UnifiedCoPilot] Pin spatial object error:', err);
+      const msg = err.message || 'Failed to pin object.';
+      setErrorMessage(msg);
+      speakText('Sorry, I had trouble pinning that object. Please try again.');
+    } finally {
+      setIsPinningObject(false);
+    }
+  };
+
+  const handleLocateObject = async (query: string) => {
+    if (spatialPinsRef.current.length === 0) {
+      const emptyMsg =
+        "You don't have any pinned objects yet. Point your camera at an item and say 'remember where my keys are' to save its location.";
+      addFeedItem({
+        type: 'spatial',
+        title: 'Spatial Memory Search',
+        content: emptyMsg,
+      });
+      speakText(emptyMsg);
+      return;
+    }
+
+    setIsLocatingObject(true);
+    setErrorMessage(null);
+    stopSpeaking();
+    speakText('Checking spatial memory...');
+
+    try {
+      let liveFrame: string | undefined = undefined;
+      if (isCameraActive && videoRef.current) {
+        liveFrame = captureFrameBase64() || undefined;
+      }
+
+      const result = await callTool('locate_spatial_object', {
+        query: query,
+        spatial_pins_json: JSON.stringify(spatialPinsRef.current),
+        current_frame_base64: liveFrame,
+        mime_type: 'image/jpeg',
+      });
+
+      addFeedItem({
+        type: 'spatial',
+        title: `Spatial Query: ${query}`,
+        content: result.spokenText,
+        proactiveInsight: result.proactiveInsight,
+        detailedText: result.detailedText,
+      });
+
+      speakText(result.spokenText);
+    } catch (err: any) {
+      console.warn('[UnifiedCoPilot] Locate spatial object error:', err);
+      const msg = err.message || 'Failed to locate object.';
+      setErrorMessage(msg);
+      speakText('Sorry, I had trouble searching spatial memory.');
+    } finally {
+      setIsLocatingObject(false);
+    }
+  };
+
+  const handleRemovePin = (id: string, itemName: string) => {
+    setSpatialPins((prev) => prev.filter((p) => p.id !== id));
+    speakText(`Removed ${itemName} from spatial memory.`);
+    addFeedItem({
+      type: 'system',
+      content: `Removed ${itemName} from spatial memory registry.`,
+    });
+  };
+
+  const handleClearAllPins = () => {
+    setSpatialPins([]);
+    speakText('Cleared all pinned objects from spatial memory.');
+    addFeedItem({
+      type: 'system',
+      content: 'Cleared all pinned objects from spatial memory registry.',
+    });
+  };
+
+  const handleListPins = () => {
+    if (spatialPinsRef.current.length === 0) {
+      const msg = "You haven't pinned any items yet. Say 'remember where my keys are' to track an item.";
+      speakText(msg);
+      addFeedItem({ type: 'spatial', title: 'Spatial Memory', content: msg });
+      return;
+    }
+
+    const itemsSummary = spatialPinsRef.current
+      .map((p) => `${p.item} (${p.landmark || p.location})`)
+      .join(', ');
+    const spoken = `You have ${spatialPinsRef.current.length} pinned item${
+      spatialPinsRef.current.length > 1 ? 's' : ''
+    }: ${itemsSummary}.`;
+
+    speakText(spoken);
+    addFeedItem({
+      type: 'spatial',
+      title: `Spatial Registry (${spatialPinsRef.current.length} items)`,
+      content: spoken,
+    });
+  };
+
+  // =========================================================================
   // VOICE COMMAND PARSER (UNIFIED ACROSS RADAR & INSPECTION)
   // =========================================================================
 
@@ -731,6 +953,57 @@ export function UnifiedCoPilot({
     );
   };
 
+  const extractPinnedItem = (text: string): string => {
+    const lower = text.toLowerCase().trim();
+    const rememberMatch = lower.match(
+      /remember\s+where\s+(?:i\s+(?:put|left|placed)\s+)?(?:my\s+|the\s+|a\s+|an\s+)?([a-z0-9\s]+?)(?:\s+is|\s+are|\.|$)/i
+    );
+    if (rememberMatch && rememberMatch[1]?.trim()) {
+      return rememberMatch[1].trim();
+    }
+    const pinMatch = lower.match(
+      /\b(?:pin|track|save|remember)\s+(?:my\s+|the\s+|a\s+|an\s+)?([a-z0-9\s]+?)(?:\s+here|\s+on\s+the|\s+to\s+the|\.|$)/i
+    );
+    if (pinMatch && pinMatch[1]?.trim()) {
+      const candidate = pinMatch[1].trim();
+      if (!['this', 'it', 'object', 'item', 'here', 'location', 'where'].includes(candidate)) {
+        return candidate;
+      }
+    }
+    return 'object in view';
+  };
+
+  const isPinCommand = (text: string): boolean => {
+    return (
+      /\bremember\s+where\b/i.test(text) ||
+      /\bpin\s+(my|the|this|an?|[a-z0-9]+)\b/i.test(text) ||
+      /\b(remember|save|track)\s+(this|my|the)\s+(item|object|keys?|wallet|bottle|glasses|phone|bag|backpack|cup|plate|laptop|charger|badge|book|medicine|pills?)\b/i.test(text) ||
+      /^(pin this|pin object|remember this|pin item|remember location)$/i.test(text)
+    );
+  };
+
+  const isWhereIsCommand = (text: string): boolean => {
+    return (
+      /\bwhere\s+(?:did\s+i\s+(?:put|leave|place)|are|is|have\s+i\s+put|'s)\b/i.test(text) ||
+      /\b(find|locate|search\s+for)\s+(?:my|the)\b/i.test(text) ||
+      /\bwhere('s|\s+is|\s+are)\b.*\b(keys?|wallet|bottle|glasses|phone|bag|backpack|laptop|charger|badge|book|medicine|pills?|item)\b/i.test(text)
+    );
+  };
+
+  const isListPinsCommand = (text: string): boolean => {
+    return (
+      /\b(what|which)\s+(items?|objects?|pins?)\s+(did\s+you\s+remember|are\s+pinned|have\s+i\s+pinned|are\s+saved)\b/i.test(text) ||
+      /\b(list|show|what\s+are)\s+(my\s+)?(pins|pinned\s+items|memories|saved\s+items)\b/i.test(text) ||
+      /^(what did i pin|what have i pinned|list pins|show pins|my pins)$/i.test(text)
+    );
+  };
+
+  const isClearPinsCommand = (text: string): boolean => {
+    return (
+      /\b(clear|delete|forget|remove|reset)\s+(all\s+)?(pins|pinned\s+items|spatial\s+memory)\b/i.test(text)
+    );
+  };
+
   const handleVoiceCommand = (command: string) => {
     const lower = command.toLowerCase().trim();
     setInterimSpeech('');
@@ -752,7 +1025,48 @@ export function UnifiedCoPilot({
       return;
     }
 
-    // 1. Snapshot / Photo capture command
+    // 1. Stop Radar / Audio silence command
+    if (isStopCommand(lower)) {
+      markCommandHandled(command);
+      if (isRadarScanningRef.current) {
+        stopRadar();
+      } else {
+        stopSpeaking();
+        setIsSpeaking(false);
+      }
+      return;
+    }
+
+    // 2. Spatial Memory: Where is item query? ("Where did I put my water bottle?", "Where are my keys?")
+    if (isWhereIsCommand(lower)) {
+      markCommandHandled(command);
+      handleLocateObject(command);
+      return;
+    }
+
+    // 3. Spatial Memory: Pin item command ("Remember where my keys are", "Pin my water bottle")
+    if (isPinCommand(lower)) {
+      markCommandHandled(command);
+      const item = extractPinnedItem(lower);
+      handlePinObject(item);
+      return;
+    }
+
+    // 4. Spatial Memory: List pinned items ("What did I pin?", "List pinned items")
+    if (isListPinsCommand(lower)) {
+      markCommandHandled(command);
+      handleListPins();
+      return;
+    }
+
+    // 5. Spatial Memory: Clear all pins ("Clear all pins")
+    if (isClearPinsCommand(lower)) {
+      markCommandHandled(command);
+      handleClearAllPins();
+      return;
+    }
+
+    // 6. Snapshot / Photo capture command
     if (isCameraCaptureCommand(lower)) {
       markCommandHandled(command);
       const autoAnalyze =
@@ -764,22 +1078,10 @@ export function UnifiedCoPilot({
       return;
     }
 
-    // 2. Start Radar / Camera command
+    // 7. Start Radar / Camera command
     if (isStartRadarCommand(lower)) {
       markCommandHandled(command);
       startRadar();
-      return;
-    }
-
-    // 3. Stop Radar / Audio silence command
-    if (isStopCommand(lower)) {
-      markCommandHandled(command);
-      if (isRadarScanningRef.current) {
-        stopRadar();
-      } else {
-        stopSpeaking();
-        setIsSpeaking(false);
-      }
       return;
     }
 
@@ -873,7 +1175,9 @@ export function UnifiedCoPilot({
               {/* Dynamic Status Pill */}
               <span
                 className={`text-xs px-2.5 py-0.5 rounded-full font-semibold border flex items-center gap-1.5 ${
-                  mode === 'radar'
+                  isPinningObject || isLocatingObject
+                    ? 'bg-amber-500/10 text-amber-500 border-amber-500/40'
+                    : mode === 'radar'
                     ? 'bg-[var(--status-listening-bg)] text-[var(--status-listening-text)] border-[var(--status-listening-border)]'
                     : mode === 'inspection'
                     ? 'bg-[var(--bg-subtle)] text-[var(--accent-primary)] border-[var(--accent-primary)]'
@@ -883,7 +1187,9 @@ export function UnifiedCoPilot({
               >
                 <span
                   className={`h-2 w-2 rounded-full ${
-                    mode === 'radar'
+                    isPinningObject || isLocatingObject
+                      ? 'bg-amber-500 animate-pulse'
+                      : mode === 'radar'
                       ? 'bg-[var(--status-listening-text)] animate-ping'
                       : mode === 'inspection'
                       ? 'bg-[var(--accent-primary)]'
@@ -891,7 +1197,11 @@ export function UnifiedCoPilot({
                   }`}
                 />
                 <span>
-                  {mode === 'radar'
+                  {isPinningObject
+                    ? 'Pinning Object...'
+                    : isLocatingObject
+                    ? 'Locating in Memory...'
+                    : mode === 'radar'
                     ? isAnalyzingFrame
                       ? 'Radar (Reasoning)'
                       : 'Radar (Scanning ~5s)'
@@ -904,7 +1214,7 @@ export function UnifiedCoPilot({
               </span>
             </div>
             <p className="text-sm text-[var(--text-secondary)] mt-0.5">
-              Hands-free visual co-pilot. Say &quot;start surroundings&quot;, &quot;take a photo&quot;, or &quot;pick a file&quot;.
+              Hands-free visual co-pilot with Spatial Memory. Say &quot;start surroundings&quot;, &quot;remember where my keys are&quot;, or &quot;where did I put my water bottle?&quot;.
             </p>
           </div>
 
@@ -1050,6 +1360,67 @@ export function UnifiedCoPilot({
           )}
         </div>
 
+        {/* Spatial Memory Registry Strip */}
+        <div className="rounded-[var(--radius-sm)] border border-amber-500/30 bg-amber-50/20 dark:bg-amber-950/20 p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <MapPin className="h-4 w-4 text-amber-500 shrink-0" />
+              <span className="text-xs font-semibold text-[var(--text-primary)]">
+                Spatial Memory Registry ({spatialPins.length})
+              </span>
+            </div>
+            {spatialPins.length > 0 && (
+              <button
+                type="button"
+                onClick={handleClearAllPins}
+                className="text-[11px] text-[var(--text-secondary)] hover:text-rose-500 transition-colors flex items-center gap-1"
+                title="Clear all spatial pins"
+              >
+                <Trash2 className="h-3 w-3" />
+                <span>Clear All</span>
+              </button>
+            )}
+          </div>
+
+          {spatialPins.length === 0 ? (
+            <p className="text-xs text-[var(--text-secondary)]">
+              No items pinned yet. Point your camera and say &quot;Remember where my keys are&quot; or click &quot;Pin Object&quot;.
+            </p>
+          ) : (
+            <div className="flex flex-wrap gap-2 pt-0.5">
+              {spatialPins.map((pin) => (
+                <div
+                  key={pin.id}
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-amber-500/40 bg-[var(--bg-surface)] text-xs shadow-sm hover:border-amber-500 transition-all group"
+                >
+                  <button
+                    type="button"
+                    onClick={() => handleLocateObject(`Where is my ${pin.item}?`)}
+                    disabled={isLocatingObject}
+                    className="flex items-center gap-1.5 text-left"
+                    title={`Click to locate ${pin.item}`}
+                  >
+                    <MapPin className="h-3 w-3 text-amber-500 shrink-0" />
+                    <span className="font-semibold text-[var(--text-primary)]">{pin.item}</span>
+                    <span className="text-[10px] text-[var(--text-secondary)]">({pin.timestamp})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleRemovePin(pin.id, pin.item);
+                    }}
+                    className="text-[var(--text-secondary)] hover:text-rose-500 ml-1 p-0.5 rounded-full"
+                    aria-label={`Remove ${pin.item} from spatial memory`}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         {/* Action Toolbar */}
         <div className="flex flex-wrap items-center gap-2 pt-1">
           {/* Radar Start/Stop Button */}
@@ -1085,6 +1456,27 @@ export function UnifiedCoPilot({
           >
             <Camera className="h-4 w-4 text-[var(--accent-primary)]" />
             <span>Snap Photo</span>
+          </button>
+
+          {/* Pin Object Button */}
+          <button
+            type="button"
+            onClick={() => handlePinObject()}
+            disabled={isPinningObject}
+            className="btn-secondary py-2 px-3 text-xs font-semibold flex items-center gap-1.5 border-amber-500/40 text-amber-600 dark:text-amber-400 hover:bg-amber-500/10"
+            aria-label="Pin object in view to spatial memory"
+          >
+            {isPinningObject ? (
+              <>
+                <RefreshCw className="h-4 w-4 animate-spin text-amber-500" />
+                <span>Pinning...</span>
+              </>
+            ) : (
+              <>
+                <MapPin className="h-4 w-4 text-amber-500" />
+                <span>Pin Object</span>
+              </>
+            )}
           </button>
 
           {/* Choose File Button */}
@@ -1241,6 +1633,8 @@ export function UnifiedCoPilot({
                 className={`p-3.5 rounded-[var(--radius-sm)] border space-y-1.5 transition-colors ${
                   item.type === 'radar'
                     ? 'border-emerald-500/40 bg-emerald-50/40 dark:bg-emerald-950/20'
+                    : item.type === 'spatial'
+                    ? 'border-amber-500/40 bg-amber-50/30 dark:bg-amber-950/20'
                     : item.type === 'analysis'
                     ? 'border-[var(--accent-primary)] bg-[var(--bg-subtle)]'
                     : item.type === 'followup'
@@ -1250,9 +1644,19 @@ export function UnifiedCoPilot({
               >
                 {/* Header */}
                 <div className="flex items-center justify-between text-xs text-[var(--text-secondary)]">
-                  <span className="font-semibold uppercase tracking-wider text-[var(--text-primary)]">
-                    {item.title || (item.type === 'radar' ? 'Radar Event' : item.type === 'analysis' ? 'Analysis' : 'System')}
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    {item.type === 'spatial' && <MapPin className="h-3.5 w-3.5 text-amber-500" />}
+                    <span className="font-semibold uppercase tracking-wider text-[var(--text-primary)]">
+                      {item.title ||
+                        (item.type === 'radar'
+                          ? 'Radar Event'
+                          : item.type === 'spatial'
+                          ? 'Spatial Memory'
+                          : item.type === 'analysis'
+                          ? 'Analysis'
+                          : 'System')}
+                    </span>
+                  </div>
                   <span className="font-mono text-[11px]">{item.timestamp}</span>
                 </div>
 
@@ -1297,7 +1701,7 @@ export function UnifiedCoPilot({
             placeholder={
               isSpeaking
                 ? "Type question to interrupt narration (or speak aloud)..."
-                : "Ask about your surroundings or media (e.g. 'Is the door open?', 'What's the score?')"
+                : "Ask about surroundings, pinned items, or media (e.g. 'Where did I put my water bottle?')"
             }
             disabled={isAnsweringFollowup}
             className="flex-1 rounded-[var(--radius-sm)] border border-[var(--border-neutral)] bg-[var(--bg-surface)] px-3 py-2 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:ring-2 focus:ring-[var(--focus-ring)]"

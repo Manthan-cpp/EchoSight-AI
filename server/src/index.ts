@@ -10,6 +10,8 @@ import {
   narrateVideoClip,
   analyzeScorecard,
   answerFollowup,
+  pinSpatialObject,
+  locateSpatialObject,
 } from './pipeline.js';
 
 dotenv.config();
@@ -154,6 +156,31 @@ if (isStdioMode) {
         const result = await answerFollowup(
           args.question,
           args.prior_context || '',
+          imageBuffer,
+          args.mime_type
+        );
+        res.json(result);
+      } else if (toolName === 'pin_spatial_object') {
+        if (!args.image_base64) {
+          res.status(400).json({ error: 'Missing required image_base64 parameter' });
+          return;
+        }
+        const imageBuffer = Buffer.from(args.image_base64, 'base64');
+        const result = await pinSpatialObject(
+          imageBuffer,
+          args.item_name || 'auto',
+          args.mime_type || 'image/jpeg'
+        );
+        res.json(result);
+      } else if (toolName === 'locate_spatial_object') {
+        if (!args.query) {
+          res.status(400).json({ error: 'Missing required query parameter' });
+          return;
+        }
+        const imageBuffer = args.image_base64 ? Buffer.from(args.image_base64, 'base64') : undefined;
+        const result = await locateSpatialObject(
+          args.query,
+          args.spatial_pins_json || '[]',
           imageBuffer,
           args.mime_type
         );

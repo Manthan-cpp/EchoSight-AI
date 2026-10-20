@@ -6,6 +6,8 @@ import {
   narrateVideoClip,
   describeSurroundingsFrame,
   answerFollowup,
+  pinSpatialObject,
+  locateSpatialObject,
 } from './pipeline.js';
 
 export function createEchoSightServer(): McpServer {
@@ -192,6 +194,77 @@ export function createEchoSightServer(): McpServer {
     }
   );
 
+  // Tool 6: pin_spatial_object (Spatial memory and object pinning)
+  server.tool(
+    'pin_spatial_object',
+    'Pins an object in spatial memory relative to landmarks in the room for a blind user (e.g. "Remember where my keys are").',
+    {
+      image_base64: z.string().describe('Base64-encoded camera frame containing the object'),
+      item_name: z.string().optional().default('auto').describe('Name of item to remember (e.g. "keys", "water bottle", "auto")'),
+      mime_type: z.string().optional().default('image/jpeg').describe('Image MIME format'),
+    },
+    async ({ image_base64, item_name, mime_type }) => {
+      try {
+        const imageBuffer = Buffer.from(image_base64, 'base64');
+        const result = await pinSpatialObject(imageBuffer, item_name, mime_type);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(result),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: 'text',
+              text: `Error pinning spatial object: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 7: locate_spatial_object (Spatial memory retrieval and guidance)
+  server.tool(
+    'locate_spatial_object',
+    'Guides a blind user to retrieve a previously pinned object based on spatial memory landmarks and current camera view.',
+    {
+      query: z.string().describe('User query looking for object (e.g. "Where did I put my water bottle?")'),
+      spatial_pins_json: z.string().describe('JSON array of recorded spatial pins with landmarks and timestamps'),
+      image_base64: z.string().optional().describe('Optional current camera frame for real-time visual guidance'),
+      mime_type: z.string().optional().default('image/jpeg').describe('Image MIME format'),
+    },
+    async ({ query, spatial_pins_json, image_base64, mime_type }) => {
+      try {
+        const imageBuffer = image_base64 ? Buffer.from(image_base64, 'base64') : undefined;
+        const result = await locateSpatialObject(query, spatial_pins_json, imageBuffer, image_base64 ? mime_type : undefined);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: result.spokenText,
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: 'text',
+              text: `Error locating spatial object: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
   // Baseline tool: ping
   server.tool(
     'ping',
@@ -213,6 +286,8 @@ export function createEchoSightServer(): McpServer {
           'analyze_video',
           'analyze_scorecard',
           'ask_followup',
+          'pin_spatial_object',
+          'locate_spatial_object',
           'ping',
         ],
         message: message ? `pong: ${message}` : 'pong',

@@ -441,3 +441,138 @@ ${brevityInstruction} Maintain calm, clear speech phrasing. Do not ask for or me
     proactiveInsight: text.split('.')[0] || 'Follow-up answered.',
   };
 }
+
+export interface SpatialPinResult {
+  item: string;
+  location: string;
+  landmark: string;
+  spokenText: string;
+  confidence: 'high' | 'medium' | 'low';
+}
+
+/**
+ * Pin an object in spatial memory relative to landmarks in the room.
+ */
+export async function pinSpatialObject(
+  imageBuffer: Buffer,
+  itemName: string = 'auto',
+  mimeType: string = 'image/jpeg'
+): Promise<SpatialPinResult> {
+  const targetItem = itemName && itemName !== 'auto' ? itemName : 'the primary object in view';
+
+  const prompt = `You are EchoSight's spatial localization engine for blind and low-vision users.
+The user wants to remember the exact location of an item in this room: "${targetItem}".
+Tasks:
+1. Locate the item in the image. If item was "auto" or not specified, detect the most prominent personal item (e.g. keys, phone, water bottle, cane, bag, glasses, medication, wallet).
+2. Determine its exact 3D spatial position relative to permanent landmarks (furniture, walls, appliances, doors, counters).
+3. Generate a clear, comforting confirmation sentence suitable for speech to a blind person (e.g. "Pinned your water bottle on the wooden desk, approximately two feet to the right of the laptop.").
+
+Format your response strictly as valid JSON matching this structure:
+{
+  "item": "Name of the item (e.g. Water bottle, Keys, Phone)",
+  "location": "Exact spatial landmark description (e.g. On the wooden desk to the right of the laptop)",
+  "landmark": "Primary anchor furniture or surface (e.g. Wooden desk, Coffee table, Kitchen counter)",
+  "spokenText": "Spoken confirmation sentence for the blind user",
+  "confidence": "high"
+}`;
+
+  const response = await generateWithRetry({
+    model: getModelName(),
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          { text: prompt },
+          {
+            inlineData: {
+              data: imageBuffer.toString('base64'),
+              mimeType,
+            },
+          },
+        ],
+      },
+    ],
+    config: {
+      temperature: 0.1,
+      responseMimeType: 'application/json',
+    },
+  });
+
+  const rawText = response.text?.trim() || '{}';
+  try {
+    const parsed = JSON.parse(rawText);
+    return {
+      item: parsed.item || targetItem,
+      location: parsed.location || 'On the surface in front of you',
+      landmark: parsed.landmark || 'Current surface',
+      spokenText: parsed.spokenText || `Pinned your ${parsed.item || targetItem}.`,
+      confidence: parsed.confidence || 'high',
+    };
+  } catch {
+    return {
+      item: targetItem,
+      location: rawText.slice(0, 100),
+      landmark: 'Nearby surface',
+      spokenText: `Pinned your ${targetItem} in view.`,
+      confidence: 'medium',
+    };
+  }
+}
+
+/**
+ * Locate a previously pinned object from spatial memory and guide user.
+ */
+export async function locateSpatialObject(
+  query: string,
+  spatialPinsJson: string,
+  currentFrameBuffer?: Buffer,
+  mimeType: string = 'image/jpeg'
+): Promise<PipelineResult> {
+  const prompt = `You are EchoSight guiding a blind or low-vision user to find an item they misplaced.
+User Query: "${query}"
+
+Previously Recorded Spatial Pins (with landmark positions and times):
+"""
+${spatialPinsJson || 'No pinned items recorded.'}
+"""
+
+Instructions:
+1. Find the matching pinned item that best matches what the user is asking for.
+2. If current camera frame is provided:
+   - Check if the pinned object or its landmark is visible right now.
+   - If visible, guide the user's hand or direction immediately (e.g., "I see your water bottle right in front of you, about two feet away on the desk to your right.").
+   - If not in current view, tell the user where it was pinned, how long ago, and which way to turn (e.g., "You pinned your water bottle on the dining table next to the laptop. Turn slightly to your left towards the dining table.").
+3. If no camera frame is provided:
+   - Tell the user the recorded landmark and position in a clear, patient auditory sentence (e.g. "Your water bottle was pinned on the wooden dining table to the right of the laptop, seen 4 minutes ago.").
+4. If no pin exists for this item:
+   - Politely tell the user you don't have a record for it yet, and remind them they can point the camera at it and say "Remember where my [item] is".
+
+Respond in 1 to 2 calm, direct, spoken sentences formatted for listening.`;
+
+  const parts: any[] = [{ text: prompt }];
+
+  if (currentFrameBuffer) {
+    parts.push({
+      inlineData: {
+        data: currentFrameBuffer.toString('base64'),
+        mimeType,
+      },
+    });
+  }
+
+  const response = await generateWithRetry({
+    model: getModelName(),
+    contents: [{ role: 'user', parts }],
+    config: {
+      temperature: 0.2,
+    },
+  });
+
+  const text = response.text?.trim() || 'I could not locate that item.';
+  return {
+    spokenText: text,
+    detailedText: text,
+    confidence: 'high',
+    proactiveInsight: text.split('.')[0] || 'Object located.',
+  };
+}
