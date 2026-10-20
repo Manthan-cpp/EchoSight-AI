@@ -146,6 +146,9 @@ export async function analyzeStillImage(
   const ai = getAiClient();
   const prompt = `Perform an exhaustive, structured visual description of this image.
 Lead with the single most notable insight, then describe layout, specific components, labels, and underlying meaning.
+- If this is a sports scorecard or match graphic: Reason about match context, teams, current score, overs, wickets, run rate, required rate, momentum, player innings, and key match takeaways.
+- If this is a chart, graph, or infographic: Identify title, axes, scale, exact values, trends, outliers, and what the data actually means.
+- If this is a diagram, map, document, or scene: Break down key elements, spatial positioning, text, and primary meaning.
 ${options.focus ? `Focus area requested: ${options.focus}` : ''}
 ${options.priorContext ? `Prior conversation context: ${options.priorContext}` : ''}`;
 
