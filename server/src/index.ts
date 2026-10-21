@@ -12,6 +12,7 @@ import {
   answerFollowup,
   pinSpatialObject,
   locateSpatialObject,
+  instantPathCheck,
 } from './pipeline.js';
 
 dotenv.config();
@@ -187,6 +188,14 @@ if (isStdioMode) {
           imageBuffer,
           args.mime_type
         );
+        res.json(result);
+      } else if (toolName === 'check_walking_path') {
+        if (!args.image_base64) {
+          res.status(400).json({ error: 'Missing required image_base64 parameter' });
+          return;
+        }
+        const imageBuffer = Buffer.from(args.image_base64, 'base64');
+        const result = await instantPathCheck(imageBuffer, args.mime_type || 'image/jpeg');
         res.json(result);
       } else {
         res.status(404).json({ error: `Tool not found: ${toolName}` });

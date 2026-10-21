@@ -76,7 +76,8 @@ export function UnifiedCoPilot({
   const [isCameraActive, setIsCameraActive] = useState<boolean>(false);
   const [isRadarScanning, setIsRadarScanning] = useState<boolean>(false);
   const [isAnalyzingFrame, setIsAnalyzingFrame] = useState<boolean>(false);
-  const [sessionSeconds, setSessionSeconds] = useState<number>(0);
+  const [cameraFacing, setCameraFacing] = useState<'environment' | 'user'>('environment');
+  const sessionSecondsRef = useRef<number>(0);
   const cadenceSeconds = 5;
   const MAX_SESSION_SECONDS = 300; // 5 min safety cap
 
@@ -244,7 +245,7 @@ export function UnifiedCoPilot({
   // CAMERA STREAM & REAL-TIME RADAR ENGINE
   // =========================================================================
 
-  const startCamera = async (): Promise<boolean> => {
+  const startCamera = async (facing: 'environment' | 'user' = cameraFacing): Promise<boolean> => {
     try {
       if (videoRef.current && videoRef.current.srcObject) {
         setIsCameraActive(true);
@@ -253,7 +254,7 @@ export function UnifiedCoPilot({
 
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
-          facingMode: 'environment',
+          facingMode: { ideal: facing },
           width: { ideal: 1280 },
           height: { ideal: 720 },
         },
@@ -264,6 +265,8 @@ export function UnifiedCoPilot({
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
         setIsCameraActive(true);
+        // Wait 450ms for camera auto-exposure and white balance calibration
+        await new Promise((r) => setTimeout(r, 450));
         return true;
       }
       return false;
@@ -273,6 +276,20 @@ export function UnifiedCoPilot({
       addFeedItem({ type: 'system', content: msg });
       speakText(msg);
       return false;
+    }
+  };
+
+  const handleToggleCamera = async () => {
+    const nextFacing = cameraFacing === 'environment' ? 'user' : 'environment';
+    setCameraFacing(nextFacing);
+    stopCamera();
+    prevFrameRef.current = null;
+    priorContextRef.current = '';
+    const success = await startCamera(nextFacing);
+    if (success) {
+      const label = nextFacing === 'environment' ? 'rear back camera' : 'front selfie camera';
+      speakText(`Switched to ${label}.`);
+      addFeedItem({ type: 'system', content: `Camera switched to ${label}.` });
     }
   };
 
@@ -290,8 +307,8 @@ export function UnifiedCoPilot({
     const canvas = canvasRef.current;
     if (!video || !canvas || video.readyState < 2) return null;
 
-    // Constrain resolution to max 800px for instant encoding and low-latency API transport
-    const maxDim = 800;
+    // Constrain resolution to max 640px for instant encoding and sub-second API transport
+    const maxDim = 640;
     let width = video.videoWidth || 640;
     let height = video.videoHeight || 480;
     if (width > maxDim || height > maxDim) {
@@ -310,7 +327,7 @@ export function UnifiedCoPilot({
     if (!ctx) return null;
 
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.80);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.70);
     return dataUrl.split(',')[1] || null;
   };
 
@@ -322,6 +339,8 @@ export function UnifiedCoPilot({
     setPreviewUrl(null);
     setFileBase64(null);
     setActiveAnalysisResult(null);
+    prevFrameRef.current = null;
+    priorContextRef.current = '';
 
     const cameraStarted = await startCamera();
     if (!cameraStarted) return;
@@ -329,12 +348,12 @@ export function UnifiedCoPilot({
     setMode('radar');
     setIsRadarScanning(true);
     isRadarScanningRef.current = true;
-    setSessionSeconds(0);
+    sessionSecondsRef.current = 0;
     sessionIdRef.current += 1;
     const currentSessionId = sessionIdRef.current;
 
     stopSpeaking();
-    const startMsg = 'Live Surroundings Radar started. Scanning walking path every five seconds.';
+    const startMsg = 'Live Surroundings Radar started. Scanning walking path.';
     addFeedItem({ type: 'system', content: startMsg });
     speakText(startMsg, () => {
       // Begin first radar frame analysis
@@ -346,13 +365,10 @@ export function UnifiedCoPilot({
     // Session timer for safety cap
     if (sessionTimerRef.current) clearInterval(sessionTimerRef.current);
     sessionTimerRef.current = setInterval(() => {
-      setSessionSeconds((prev) => {
-        if (prev >= MAX_SESSION_SECONDS) {
-          stopRadar('Session limit reached (5 minutes). Radar paused.');
-          return prev;
-        }
-        return prev + 1;
-      });
+      sessionSecondsRef.current += 1;
+      if (sessionSecondsRef.current >= MAX_SESSION_SECONDS) {
+        stopRadar('Session limit reached (5 minutes). Radar paused.');
+      }
     }, 1000);
   };
 
@@ -414,7 +430,7 @@ export function UnifiedCoPilot({
       prevFrameRef.current = frameBase64;
       priorContextRef.current = result.spokenText;
 
-      if (!result.isUnchanged) {
+      if (result.spokenText) {
         addFeedItem({
           type: 'radar',
           title: 'Sensory Observation',
@@ -431,13 +447,21 @@ export function UnifiedCoPilot({
           }
         });
       } else {
-        cadenceTimerRef.current = setTimeout(
-          () => processCadenceCycle(sessionId),
-          cadenceSeconds * 1000
-        );
+        if (isRadarScanningRef.current && sessionId === sessionIdRef.current) {
+          cadenceTimerRef.current = setTimeout(
+            () => processCadenceCycle(sessionId),
+            cadenceSeconds * 1000
+          );
+        }
       }
     } catch (err: any) {
       console.warn('[UnifiedCoPilot] Radar cadence error:', err);
+      if (isRadarScanningRef.current && sessionId === sessionIdRef.current) {
+        cadenceTimerRef.current = setTimeout(
+          () => processCadenceCycle(sessionId),
+          2000
+        );
+      }
     } finally {
       isProcessingRef.current = false;
       setIsAnalyzingFrame(false);
@@ -980,24 +1004,29 @@ export function UnifiedCoPilot({
       text.includes('quiet') ||
       text.includes('shut up') ||
       text.includes('be quiet') ||
-      text.includes('silence')
+      text.includes('silence') ||
+      text.includes('halt') ||
+      /\b(turn\s*off|close|disable|kill)\s*(the\s*)?(camera|radar|video|stream)\b/i.test(text)
     );
   };
 
   const extractPinnedItem = (text: string): string => {
     const lower = text.toLowerCase().trim();
     const rememberMatch = lower.match(
-      /remember\s+where\s+(?:i\s+(?:put|left|placed)\s+)?(?:my\s+|the\s+|a\s+|an\s+)?([a-z0-9\s]+?)(?:\s+is|\s+are|\.|$)/i
+      /remember\s+(?:that\s+)?(?:where\s+)?(?:i\s+(?:put|left|placed)\s+)?(?:my\s+|the\s+|a\s+|an\s+)?([a-z0-9\s]+?)(?:\s+(?:is|are|was|were|here|on\s+the|at\s+the|to\s+the)|\.|$)/i
     );
     if (rememberMatch && rememberMatch[1]?.trim()) {
-      return rememberMatch[1].trim();
+      const candidate = rememberMatch[1].trim();
+      if (!['this', 'it', 'object', 'item', 'here', 'location', 'where', 'that'].includes(candidate)) {
+        return candidate;
+      }
     }
     const pinMatch = lower.match(
-      /\b(?:pin|track|save|remember)\s+(?:my\s+|the\s+|a\s+|an\s+)?([a-z0-9\s]+?)(?:\s+here|\s+on\s+the|\s+to\s+the|\.|$)/i
+      /\b(?:pin|track|save|remember)\s+(?:the\s+location\s+of\s+)?(?:my\s+|the\s+|a\s+|an\s+)?([a-z0-9\s]+?)(?:\s+(?:here|on\s+the|to\s+the|at\s+the|is|are|was)|\.|$)/i
     );
     if (pinMatch && pinMatch[1]?.trim()) {
       const candidate = pinMatch[1].trim();
-      if (!['this', 'it', 'object', 'item', 'here', 'location', 'where'].includes(candidate)) {
+      if (!['this', 'it', 'object', 'item', 'here', 'location', 'where', 'that', 'location of'].includes(candidate)) {
         return candidate;
       }
     }
@@ -1013,18 +1042,23 @@ export function UnifiedCoPilot({
     }
 
     return (
-      /\b(?:pin|track|save)\s+(?:this|my|the|an?|[a-z0-9]+)\b/i.test(lower) ||
-      /\bremember\s+(?:where\s+(?:my|the)|this|location)\b/i.test(lower) ||
-      /^(pin this|pin object|remember this|pin item|remember location)$/i.test(lower)
+      /\b(?:pin|track|save|store|record)\b/i.test(lower) ||
+      /\bremember\b/i.test(lower) ||
+      /^(pin this|pin object|remember this|pin item|remember location|remember|remember item)$/i.test(lower)
     );
   };
 
   const isWhereIsCommand = (text: string): boolean => {
     const lower = text.toLowerCase().trim();
 
+    // If it starts with an imperative command to remember / pin / save / record, it is a PIN action, NOT a search!
+    if (/^(remember|pin|save|track|record|store)\b/i.test(lower)) {
+      return false;
+    }
+
     // 1. Direct retrieval questions (e.g. "Do you remember where I kept my smartphone?", "Now can you tell me where my smartphone is")
     if (
-      /\b(?:do\s+you\s+remember|can\s+you\s+tell\s+me|tell\s+me|show\s+me|know)\s+where\b/i.test(lower) ||
+      /\b(?:do\s+you\s+remember|did\s+you\s+remember|can\s+you\s+tell\s+me|tell\s+me|show\s+me|know)\s+where\b/i.test(lower) ||
       /\bwhere\s+(?:did\s+i|have\s+i|can\s+i|was|is|are|'s)\b/i.test(lower) ||
       /\bwhere\s+(?:i\s+)?(?:kept|put|left|placed|set|dropped)\b/i.test(lower) ||
       /\bwhere\s+.*?\b(?:is|are|was|were)\b/i.test(lower) ||
@@ -1041,7 +1075,7 @@ export function UnifiedCoPilot({
       );
       if (
         mentionsPinnedItem &&
-        /\b(where|find|locate|kept|put|left|placed|seen|lost|remember)\b/i.test(lower)
+        /\b(where|find|locate|which\s*room|where's|lost)\b/i.test(lower)
       ) {
         return true;
       }
@@ -1062,6 +1096,29 @@ export function UnifiedCoPilot({
     return (
       /\b(clear|delete|forget|remove|reset)\s+(all\s+)?(pins|pinned\s+items|spatial\s+memory)\b/i.test(text)
     );
+  };
+
+  const isClearMediaCommand = (text: string): boolean => {
+    const clean = text.toLowerCase().trim();
+    return (
+      /\b(clear|delete|remove|close|reset|discard|dismiss|cancel)\s+(the\s+)?(image|photo|picture|snapshot|media|capture|preview|camera|view)\b/i.test(clean) ||
+      /\b(clear|delete|remove|close|discard)\s+(this|it)\b/i.test(clean) ||
+      /^(clear|clear image|clear photo|clear snapshot|delete photo|delete image|remove image|remove photo|close image|reset image|reset snapshot|reset)$/i.test(clean)
+    );
+  };
+
+  const handleClearMedia = () => {
+    setSelectedFile(null);
+    setPreviewUrl(null);
+    setFileBase64(null);
+    fileBase64Ref.current = null;
+    setActiveAnalysisResult(null);
+    setIsAwaitingFileTap(false);
+    setMode('standby');
+    stopSpeaking();
+    const msg = 'Snapshot cleared. Returned to standby. Say "start surroundings" or "take a photo".';
+    addFeedItem({ type: 'system', content: 'Snapshot cleared. Returned to standby.' });
+    speakText(msg);
   };
 
   const handleVoiceCommand = (command: string) => {
@@ -1085,14 +1142,13 @@ export function UnifiedCoPilot({
       return;
     }
 
-    // 1. Stop Radar / Audio silence command
+    // 1. Stop Radar / Audio silence / Stop Camera command
     if (isStopCommand(lower)) {
       markCommandHandled(command);
-      if (isRadarScanningRef.current) {
-        stopRadar();
-      } else {
-        stopSpeaking();
-        setIsSpeaking(false);
+      stopSpeaking();
+      setIsSpeaking(false);
+      if (isRadarScanningRef.current || isCameraActive || (videoRef.current && videoRef.current.srcObject)) {
+        stopRadar('Camera and radar stopped.');
       }
       return;
     }
@@ -1126,6 +1182,16 @@ export function UnifiedCoPilot({
       return;
     }
 
+    // 5b. Clear snapshot / media command ("Clear image", "Clear photo", "Clear snapshot", "Clear it")
+    if (
+      isClearMediaCommand(lower) &&
+      (fileBase64Ref.current || selectedFile || previewUrl || mode === 'inspection')
+    ) {
+      markCommandHandled(command);
+      handleClearMedia();
+      return;
+    }
+
     // 6. Snapshot / Photo capture command
     if (isCameraCaptureCommand(lower)) {
       markCommandHandled(command);
@@ -1142,6 +1208,16 @@ export function UnifiedCoPilot({
     if (isStartRadarCommand(lower)) {
       markCommandHandled(command);
       startRadar();
+      return;
+    }
+
+    // 7b. Camera flip / toggle command ("Flip camera", "Switch camera", "Rear camera", "Front camera")
+    if (
+      /\b(flip|switch|toggle|change|reverse)\s+(the\s+)?camera\b/i.test(lower) ||
+      /\b(switch|flip)\s+(to\s+)?(front|back|rear|selfie)\s+camera\b/i.test(lower)
+    ) {
+      markCommandHandled(command);
+      handleToggleCamera();
       return;
     }
 
@@ -1182,9 +1258,15 @@ export function UnifiedCoPilot({
     }
 
     // Fast-path: immediate stop on interim trigger
-    if (isStopCommand(lower) && isRadarScanningRef.current) {
+    if (
+      isStopCommand(lower) &&
+      (isRadarScanningRef.current || isCameraActive || (videoRef.current && videoRef.current.srcObject))
+    ) {
       markCommandHandled(lower);
-      stopRadar();
+      stopSpeaking();
+      setIsSpeaking(false);
+      stopRadar('Camera and radar stopped.');
+      return;
     }
   };
 
@@ -1198,12 +1280,6 @@ export function UnifiedCoPilot({
       updateVoiceActive(true);
       speakText('Voice control active. You can speak commands or questions.');
     }
-  };
-
-  const formatTime = (secs: number) => {
-    const m = Math.floor(secs / 60);
-    const s = secs % 60;
-    return `${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
   // =========================================================================
@@ -1252,7 +1328,7 @@ export function UnifiedCoPilot({
                     : mode === 'radar'
                     ? isAnalyzingFrame
                       ? 'Radar (Reasoning)'
-                      : 'Radar (Scanning ~5s)'
+                      : 'Radar (Scanning)'
                     : mode === 'inspection'
                     ? isAnalyzingMedia
                       ? 'Analyzing Media'
@@ -1386,14 +1462,24 @@ export function UnifiedCoPilot({
 
           {/* In-Viewport Radar HUD Banner (Normal Monochrome Glass) */}
           {mode === 'radar' && isRadarScanning && (
-            <div className="absolute bottom-3 left-3 right-3 glass-pill px-4 py-2 text-xs text-white flex items-center justify-between shadow-md border-0 bg-black/40 backdrop-blur-md">
-              <div className="flex items-center gap-2">
+            <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between pointer-events-none">
+              <div className="glass-pill px-3.5 py-1.5 text-xs text-white flex items-center gap-2 shadow-md border-0 bg-black/40 backdrop-blur-md pointer-events-auto">
                 <span className="h-2 w-2 rounded-full bg-white animate-ping" />
                 <span className="font-medium text-white">Walking Radar Active</span>
+                <span className="text-white/60 text-[11px]">
+                  ({cameraFacing === 'environment' ? 'Rear' : 'Front'})
+                </span>
               </div>
-              <span className="font-mono text-white/75">
-                {formatTime(sessionSeconds)} / {formatTime(MAX_SESSION_SECONDS)}
-              </span>
+              <button
+                type="button"
+                onClick={handleToggleCamera}
+                className="glass-pill px-3 py-1.5 text-xs text-white/90 hover:text-white flex items-center gap-1.5 cursor-pointer shadow-md border-0 bg-black/40 backdrop-blur-md pointer-events-auto transition-all"
+                title="Switch between front and back camera"
+                aria-label="Flip camera between front and rear"
+              >
+                <RefreshCw className="h-3 w-3" />
+                <span>Flip Camera</span>
+              </button>
             </div>
           )}
 
@@ -1562,14 +1648,7 @@ export function UnifiedCoPilot({
           {mode === 'inspection' && (
             <button
               type="button"
-              onClick={() => {
-                setSelectedFile(null);
-                setPreviewUrl(null);
-                setFileBase64(null);
-                setActiveAnalysisResult(null);
-                setMode('standby');
-                speakText('Returned to standby. Say "start surroundings" to resume walking radar.');
-              }}
+              onClick={handleClearMedia}
               className="btn-secondary py-2.5 px-4 text-xs font-medium ml-auto cursor-pointer text-white"
             >
               Clear

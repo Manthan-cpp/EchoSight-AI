@@ -6,6 +6,7 @@ import {
   speakText,
   stopSpeaking,
   startListening,
+  stopListening,
   isSpeechRecognitionSupported,
   markCommandHandled,
 } from './services/speechService';
@@ -60,8 +61,13 @@ export function App() {
       }
 
       if (isSpeechRecognitionSupported()) {
-        const isEnterWord = (text: string) =>
-          /\b(enter|inter|start|begin|go|open|continue|yes|okay|surrounding|surroundings)\b/i.test(text);
+        const isEnterWord = (text: string) => {
+          const clean = text.toLowerCase().trim();
+          return (
+            /\b(enter|inter|into|intro|center|winter|entire|inner|in|start|begin|go|open|launch|hello|hi|hey|echo|echosight|yes|yeah|yep|sure|okay|ok|continue|ready|come in|surroundings?)\b/i.test(clean) ||
+            clean.length >= 2
+          );
+        };
 
         const started = startListening(
           (transcript) => {
@@ -80,6 +86,9 @@ export function App() {
         if (started) {
           setIsListeningForEnter(true);
         }
+        return () => {
+          stopListening();
+        };
       }
     }
   }, [hasEntered]);

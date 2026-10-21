@@ -192,6 +192,44 @@ export function updateListeningHandlers(
   currentOnInterim = onInterim || null;
 }
 
+let accumulatedUtterance = '';
+let silenceDebounceTimer: any = null;
+
+function isImmediateCommand(text: string): boolean {
+  const clean = text.toLowerCase().trim();
+  return (
+    /^(stop|silence|pause|quiet|hush|shut\s*up|halt)$/i.test(clean) ||
+    /^(stop|turn\s*off|shut\s*down|close|disable|kill)\s*(the\s*)?(camera|radar|scanning|video|stream)$/i.test(clean) ||
+    /^(enter|inter|into|center|start|begin|go|open|launch)$/i.test(clean) ||
+    /^(clear|clear\s*image|clear\s*photo|clear\s*snapshot|delete\s*photo|delete\s*image|remove\s*image|remove\s*photo|reset)$/i.test(clean) ||
+    /^(can\s*i\s*(walk|move|step|go|move\s*forward|go\s*forward)|is\s*it\s*clear|is\s*the\s*path\s*clear|safe\s*to\s*walk|can\s*i\s*take\s*a\s*step|where\s*(should|can|do)\s*i\s*(move|go|walk)(\s*now)?)$/i.test(clean)
+  );
+}
+
+function flushAccumulatedCommand(): void {
+  if (silenceDebounceTimer) {
+    clearTimeout(silenceDebounceTimer);
+    silenceDebounceTimer = null;
+  }
+  const text = accumulatedUtterance.trim();
+  accumulatedUtterance = '';
+  if (!text) return;
+
+  const now = Date.now();
+  if (
+    text.toLowerCase() === lastProcessedCommand.toLowerCase() &&
+    now - lastProcessedTime < 800
+  ) {
+    console.log('[Speech] Ignored duplicate rapid command:', text);
+    return;
+  }
+
+  lastProcessedCommand = text;
+  lastProcessedTime = now;
+  console.log('[Speech] Full completed voice command:', text);
+  currentOnCommand?.(text);
+}
+
 function initRecognition(): any {
   if (typeof window === 'undefined') return null;
   const SpeechRecognition =
@@ -227,56 +265,81 @@ function initRecognition(): any {
     const activeText = trimmedFinal || trimmedInterim;
 
     // --- INSTANT BARGE-IN INTERRUPTION ---
-    // If user begins speaking, immediately halt AI speech output
+    // If user begins speaking, immediately halt AI speech output unless it's just mic echo
     if (activeText && (window.speechSynthesis?.speaking || isEchoSightSpeaking)) {
-      console.log('[Speech] User speech detected — immediately interrupting system speech!');
-      stopSpeaking();
-    }
-
-    if (trimmedInterim && currentOnInterim) {
-      currentOnInterim(trimmedInterim);
-    }
-
-    if (trimmedFinal) {
-      const now = Date.now();
-
-      // Only reject rapid identical duplicates fired within 800ms
-      if (
-        trimmedFinal.toLowerCase() === lastProcessedCommand.toLowerCase() &&
-        now - lastProcessedTime < 800
-      ) {
-        console.log('[Speech] Ignored duplicate rapid command:', trimmedFinal);
-        return;
+      const isEcho =
+        currentSpeakingText &&
+        currentSpeakingText.toLowerCase().includes(activeText.toLowerCase());
+      if (!isEcho) {
+        console.log('[Speech] User speech detected — immediately interrupting system speech!');
+        stopSpeaking();
       }
+    }
 
-      lastProcessedCommand = trimmedFinal;
-      lastProcessedTime = now;
+    // Accumulate final chunk into the current pending utterance
+    if (trimmedFinal) {
+      accumulatedUtterance = (accumulatedUtterance + ' ' + trimmedFinal).trim();
+    }
 
-      console.log('[Speech] Final recognized voice command:', trimmedFinal);
-      currentOnCommand?.(trimmedFinal);
+    // Live interim display combining what is already locked in with incoming syllables
+    const liveInterim = (accumulatedUtterance + ' ' + trimmedInterim).trim();
+    if (liveInterim && currentOnInterim) {
+      currentOnInterim(liveInterim);
+    }
+
+    // Check for immediate single-word commands that shouldn't wait for silence debounce
+    if (isImmediateCommand(accumulatedUtterance) || isImmediateCommand(trimmedFinal)) {
+      flushAccumulatedCommand();
+      return;
+    }
+
+    // When the user speaks, reset silence debounce timer (650ms pause signifies end of thought)
+    if (silenceDebounceTimer) {
+      clearTimeout(silenceDebounceTimer);
+      silenceDebounceTimer = null;
+    }
+
+    if (accumulatedUtterance) {
+      silenceDebounceTimer = setTimeout(() => {
+        flushAccumulatedCommand();
+      }, 650);
     }
   };
 
   recognition.onerror = (event: any) => {
     if (event.error !== 'no-speech' && event.error !== 'aborted') {
       console.warn('[Speech] Recognition error:', event.error);
-      currentOnError?.(`Voice recognition: ${event.error}`);
+      if (event.error === 'not-allowed') {
+        currentOnError?.('Microphone permission needed. Please allow microphone in your browser.');
+      } else {
+        currentOnError?.(`Voice recognition: ${event.error}`);
+      }
     }
   };
 
   recognition.onend = () => {
+    // If an utterance was accumulated before recognition stopped, flush it
+    if (accumulatedUtterance.trim()) {
+      flushAccumulatedCommand();
+    }
+
     if (isListeningState) {
       setTimeout(() => {
         if (isListeningState) {
           try {
-            recognitionInstance?.start();
-          } catch {
-            try {
-              recognitionInstance = initRecognition();
-              recognitionInstance?.start();
-            } catch (err) {
-              console.warn('[Speech] Could not restart recognition:', err);
+            if (recognitionInstance) {
+              try {
+                recognitionInstance.onend = null;
+                recognitionInstance.onerror = null;
+                recognitionInstance.onresult = null;
+                recognitionInstance.abort();
+              } catch {}
+              recognitionInstance = null;
             }
+            recognitionInstance = initRecognition();
+            recognitionInstance?.start();
+          } catch (err) {
+            console.warn('[Speech] Could not restart recognition:', err);
           }
         }
       }, 100);
@@ -306,18 +369,27 @@ export function startListening(
   currentOnInterim = onInterim || null;
   currentOnError = onError || null;
   currentOnStatusChange = onStatusChange || null;
+  isListeningState = true;
+  accumulatedUtterance = '';
+  if (silenceDebounceTimer) {
+    clearTimeout(silenceDebounceTimer);
+    silenceDebounceTimer = null;
+  }
+
+  // Always abort old instance to ensure fresh state
+  if (recognitionInstance) {
+    try {
+      recognitionInstance.onend = null;
+      recognitionInstance.onerror = null;
+      recognitionInstance.onresult = null;
+      recognitionInstance.abort();
+    } catch {}
+    recognitionInstance = null;
+  }
 
   try {
-    if (!recognitionInstance) {
-      recognitionInstance = initRecognition();
-    }
-
-    isListeningState = true;
-    try {
-      recognitionInstance?.start();
-    } catch {
-      // Already running or starting
-    }
+    recognitionInstance = initRecognition();
+    recognitionInstance?.start();
     onStatusChange?.(true);
     return true;
   } catch (err: any) {
@@ -334,14 +406,23 @@ export function startListening(
  */
 export function stopListening(onStatusChange?: (isListening: boolean) => void): void {
   isListeningState = false;
+  if (silenceDebounceTimer) {
+    clearTimeout(silenceDebounceTimer);
+    silenceDebounceTimer = null;
+  }
+  accumulatedUtterance = '';
   currentOnCommand = null;
   currentOnInterim = null;
   if (recognitionInstance) {
     try {
+      recognitionInstance.onend = null;
+      recognitionInstance.onerror = null;
+      recognitionInstance.onresult = null;
       recognitionInstance.stop();
     } catch {
       // Ignore
     }
+    recognitionInstance = null;
   }
   onStatusChange?.(false);
 }

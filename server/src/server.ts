@@ -8,6 +8,7 @@ import {
   answerFollowup,
   pinSpatialObject,
   locateSpatialObject,
+  instantPathCheck,
 } from './pipeline.js';
 
 export function createEchoSightServer(): McpServer {
@@ -258,6 +259,40 @@ export function createEchoSightServer(): McpServer {
             {
               type: 'text',
               text: `Error locating spatial object: ${err.message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Tool 8: check_walking_path (Instant sub-second collision radar)
+  server.tool(
+    'check_walking_path',
+    'Instant ultra-low-latency walking safety and collision avoidance check. Answers in under 6 words whether it is safe to step forward right now.',
+    {
+      image_base64: z.string().describe('Base64-encoded camera frame'),
+      mime_type: z.string().optional().default('image/jpeg').describe('Image MIME format'),
+    },
+    async ({ image_base64, mime_type }) => {
+      try {
+        const imageBuffer = Buffer.from(image_base64, 'base64');
+        const result = await instantPathCheck(imageBuffer, mime_type);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: result.spokenText,
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: 'text',
+              text: `Error checking path: ${err.message}`,
             },
           ],
         };

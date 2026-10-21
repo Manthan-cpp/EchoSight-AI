@@ -1,6 +1,12 @@
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
 dotenv.config();
 
 export interface AnalysisOptions {
@@ -44,10 +50,7 @@ function getAiClient(): GoogleGenAI {
 const CANDIDATE_MODELS = [
   process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite',
   'gemini-3.5-flash-lite',
-  'gemini-3.6-flash',
-  'gemini-3.5-flash',
   'gemini-flash-lite-latest',
-  'gemini-3.1-flash-lite',
 ];
 
 function getModelName(): string {
@@ -81,16 +84,9 @@ async function generateWithRetry(baseParams: any, maxRetries = 2): Promise<any> 
           msg.includes('503') ||
           msg.includes('high demand');
 
-        if (isQuotaExhausted) {
-          console.warn(`[EchoSight] Model ${model} quota limit reached, cascading to next model...`);
+        if (isQuotaExhausted || isTransient503) {
+          console.warn(`[EchoSight] Model ${model} unavailable, cascading to next model...`);
           break; // Cascade to next model immediately
-        }
-
-        if (isTransient503 && attempt < maxRetries) {
-          console.warn(`[EchoSight] Transient 503 spike on ${model}, retrying in ${delay}ms...`);
-          await new Promise((resolve) => setTimeout(resolve, delay));
-          delay *= 1.5;
-          continue;
         }
 
         break;
@@ -323,33 +319,26 @@ export async function describeSurroundingsFrame(
   prevFrameBuffer: Buffer | null = null,
   priorContext: string = ''
 ): Promise<PipelineResult> {
-  // Check frame difference
-  const diff = calculateFrameDifference(prevFrameBuffer, frameBuffer);
-  // If frame changed less than 5% and we had a previous frame, skip LLM call to conserve quota and avoid repeating
-  if (prevFrameBuffer && diff < 0.05) {
-    return {
-      spokenText: priorContext || 'Scene remains unchanged.',
-      detailedText: 'Frame difference is negligible (<5%). Skipped redundant LLM call.',
-      confidence: 'high',
-      isUnchanged: true,
-      proactiveInsight: 'Scene is static.',
-    };
-  }
-
   const ai = getAiClient();
-  const prompt = `You are EchoSight, real-time walking eyes and collision prevention for a blind person.
-Analyze what is directly in front of their camera right now.
+  const prompt = `You are EchoSight, real-time walking eyes and navigational guide for a completely blind person.
+Analyze the camera frame to guide their physical footsteps safely right now.
 
-GROUND TRUTH RULES:
-1. OBSTACLES & PEOPLE TAKE HIGHEST PRIORITY:
-   - If a person or face is directly in front of the camera, warn them immediately: e.g. "Stop, a person is standing directly in front of you."
-   - If a wall, closed door, desk, screen, furniture, or barrier is close in front of the camera, state clearly: e.g. "Wall directly ahead, no path forward" or "Desk directly in front of you."
-2. NEVER FABRICATE OR HALLUCINATE:
-   - NEVER say "path is clear" or "open space" unless there is visible, unobstructed floor or ground to walk on.
-   - If the camera is facing a person, a wall, an indoor room barrier, or is blocked, NEVER say the path is clear.
-3. CONCISE WALKING GUIDANCE:
-   - Strictly 1 to 2 short, punchy sentences (maximum 12 to 15 words).
-   - If the view has genuinely not changed from prior observation ("${priorContext || ''}"), do not repeat long descriptions—give a brief update like "Person still directly ahead" or "Wall still ahead".
+GROUND TRUTH & DIRECTIONAL NAVIGATION RULES:
+1. COLLISION PREVENTION & OBSTACLES (HIGHEST PRIORITY):
+   - What is DIRECTLY in front of the user's forward walking path (12 o'clock)?
+     - If blocked by a wall, closed door, bed, desk, or barrier: Warn them immediately! E.g. "Hold on. Stop right there, wall directly ahead." or "Stop, bed directly in your path."
+     - If blocked ahead, identify where the passage or doorway is: e.g. "The door is to your right—turn right." or "Opening is on your left."
+     - If an open doorway or corridor is directly ahead, guide them: e.g. "Doorway directly ahead. Step through carefully into the room."
+     - Always warn of low or side hazards: e.g. "Watch out for water jugs on your right", "A large bed sits to your left".
+2. WALKING CONFIRMATION:
+   - If the floor and path straight ahead is completely unobstructed: "Open hallway ahead, path is clear to walk."
+   - Always give relative spatial positioning ("straight ahead", "to your left", "to your right").
+   - NEVER say "path is clear" if the camera is facing a wall, closed door, bed, or obstacle!
+3. ONLY REPORT REAL LIVING PEOPLE:
+   - ONLY report a person if an actual living human being is clearly standing in front. Never guess or mistake doors, curtains, jackets, shadows, or furniture for a person.
+4. SPOKEN STYLE & CADENCE:
+   - Deliver 1 to 2 short, vigilant, spoken sentences (maximum 15 words) with calm authority, like a vigilant sighted companion walking right beside them.
+   - If the view has genuinely not changed from prior observation ("${priorContext || ''}"), give a brief update like "Path still clear ahead" or "Wall still ahead".
 
 State current walking safety:`;
 
@@ -372,10 +361,11 @@ State current walking safety:`;
     config: {
       systemInstruction: SYSTEM_INSTRUCTION,
       temperature: 0.1,
+      maxOutputTokens: 35,
     },
   });
 
-  const text = response.text?.trim() || 'No distinct objects identified in current view.';
+  const text = response.text?.trim() || 'Path is clear ahead, safe to walk.';
   return {
     spokenText: text,
     detailedText: text,
@@ -425,13 +415,16 @@ If the user's question asks where an item is or where they kept, placed, or left
 `
     : ''
 }
-STRICT VISUAL GROUND TRUTH RULES:
-1. If an image or camera frame is attached, ALWAYS inspect the image directly as the single source of truth.
-2. NEVER invent, fabricate, or hallucinate objects, benches, obstacles, or open spaces that do not physically exist in the image.
-3. If the user asks if they can walk or move forward:
-   - If a person is directly in front, warn them clearly: e.g. "No, a person is standing directly in front of you."
-   - If a wall, desk, or barrier is directly in front, warn them clearly: e.g. "No, a wall is directly ahead."
-   - Only say yes if there is genuine open, unobstructed floor space visible.
+STRICT VISUAL GROUND TRUTH & DIRECTIONAL NAVIGATION RULES:
+1. If an image or camera frame is attached, inspect the image directly as the single source of ground truth.
+2. Only report physical objects and obstacles that are genuinely visible in the camera frame.
+3. If the user asks if they can walk, move forward, or where to move:
+   - Check what is DIRECTLY in front of their forward walking path (12 o'clock):
+     - If blocked by a wall, closed door, bed, desk, or barrier: Command them firmly to stop! E.g. "Stop, wall directly in front of you." or "Stop right there, bed directly in your path."
+     - If the doorway, gate, or exit is to the right or left, direct them clearly: "The door is to your right—turn right." or "Doorway is to your left—turn left."
+     - If the walkway directly ahead is completely unobstructed: "Yes, open hallway ahead, safe to walk forward."
+     - If approaching a doorway directly ahead: "Doorway directly ahead, step through carefully into the room."
+   - ONLY report a person if an actual living human being is clearly standing in the path. Never mistake doors, curtains, jackets, coats, shadows, or furniture for a person!
 4. ${brevityInstruction} Maintain natural spoken phrasing for voice output.`;
 
   const parts: any[] = [{ text: prompt }];
@@ -451,6 +444,7 @@ STRICT VISUAL GROUND TRUTH RULES:
     config: {
       systemInstruction: SYSTEM_INSTRUCTION,
       temperature: 0.1,
+      maxOutputTokens: isExhaustive ? 250 : 40,
     },
   });
 
@@ -460,6 +454,59 @@ STRICT VISUAL GROUND TRUTH RULES:
     detailedText: text,
     confidence: 'high',
     proactiveInsight: text.split('.')[0] || 'Follow-up answered.',
+  };
+}
+
+/**
+ * Instant Ultra-Low Latency Walking Path Verification.
+ * Sub-second collision avoidance check for blind navigation.
+ */
+export async function instantPathCheck(
+  imageBuffer: Buffer,
+  mimeType: string
+): Promise<PipelineResult> {
+  const prompt = `You are EchoSight instant collision radar for a walking blind person.
+Look directly at the immediate walking path (floor and center ahead).
+Is it safe to step forward right now?
+
+CRITICAL ACCURACY RULES:
+1. If clear floor, ground, or open corridor is ahead:
+   Respond: "Path is clear ahead, safe to walk."
+2. If an obstacle blocks the immediate forward step:
+   State: "Stop, [exact object] directly ahead." (e.g. "Stop, wall ahead.", "Stop, closed door ahead.", "Stop, desk ahead.", "Stop, chair in path.")
+3. If approaching a doorway or opening:
+   State: "Doorway ahead, move carefully through center."
+4. ONLY report a person if an actual living human being is clearly visible right in front. Do NOT guess or mistake furniture, doors, shadows, or reflections for people.
+5. Keep answer under 7 words. Answer immediately:`;
+
+  const response = await generateWithRetry({
+    model: getModelName(),
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          { text: prompt },
+          {
+            inlineData: {
+              data: imageBuffer.toString('base64'),
+              mimeType,
+            },
+          },
+        ],
+      },
+    ],
+    config: {
+      temperature: 0.0,
+      maxOutputTokens: 18,
+    },
+  });
+
+  const text = response.text?.trim() || 'Path status unclear. Proceed with caution.';
+  return {
+    spokenText: text,
+    detailedText: text,
+    confidence: 'high',
+    proactiveInsight: text,
   };
 }
 

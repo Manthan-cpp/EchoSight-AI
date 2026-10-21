@@ -39,7 +39,7 @@ export function SurroundingsMode({
   };
   const [isAnalyzingFrame, setIsAnalyzingFrame] = useState<boolean>(false);
   const [cadenceSeconds] = useState<number>(5);
-  const [sessionSeconds, setSessionSeconds] = useState<number>(0);
+  const sessionSecondsRef = useRef<number>(0);
   const [followupText, setFollowupText] = useState<string>('');
   const [interimSpeech, setInterimSpeech] = useState<string>('');
   const [transcripts, setTranscripts] = useState<TranscriptItem[]>([]);
@@ -225,12 +225,6 @@ export function SurroundingsMode({
     }
   };
 
-  const formatTime = (totalSeconds: number): string => {
-    const mins = Math.floor(totalSeconds / 60);
-    const secs = totalSeconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
-
   const stopWatchingTimeout = () => {
     stopWatchingInternal();
     addTranscript(
@@ -273,15 +267,12 @@ export function SurroundingsMode({
       }
 
       // Initialize session timer
-      setSessionSeconds(0);
+      sessionSecondsRef.current = 0;
       sessionTimerRef.current = setInterval(() => {
-        setSessionSeconds((prev) => {
-          if (prev + 1 >= MAX_SESSION_SECONDS) {
-            stopWatchingTimeout();
-            return MAX_SESSION_SECONDS;
-          }
-          return prev + 1;
-        });
+        sessionSecondsRef.current += 1;
+        if (sessionSecondsRef.current >= MAX_SESSION_SECONDS) {
+          stopWatchingTimeout();
+        }
       }, 1000);
 
       // Wait for camera video dimensions to be ready (takes ~200-400ms)
@@ -289,7 +280,7 @@ export function SurroundingsMode({
       if (!isReady || currentSessionId !== sessionIdRef.current) {
         console.warn('[Surroundings] Video frame timed out or cancelled during startup.');
       } else {
-        addTranscript('Camera active. Analyzing surroundings every 5 seconds.', 'system');
+        addTranscript('Camera active. Analyzing surroundings.', 'system');
       }
 
       // Fire initial analysis immediately as soon as camera is ready!
@@ -637,7 +628,7 @@ export function SurroundingsMode({
               Surroundings Mode
             </h2>
             <p className="text-sm text-[var(--text-secondary)]">
-              Continuous live visual description updated out-loud every ~{cadenceSeconds} seconds.
+              Continuous live visual description updated out loud.
             </p>
           </div>
 
@@ -688,10 +679,7 @@ export function SurroundingsMode({
             <div className="absolute bottom-3 left-3 right-3 rounded-[var(--radius-sm)] border border-[var(--border-neutral)] bg-[var(--bg-surface)] p-2.5 shadow-sm text-xs text-[var(--text-primary)] flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span className="h-2 w-2 rounded-[2px] bg-[var(--accent-primary)]" aria-hidden="true" />
-                <span className="font-medium">Cadence: ~{cadenceSeconds}s Loop</span>
-                <span className="text-[var(--text-secondary)]">
-                  • Session: {formatTime(sessionSeconds)} / {formatTime(MAX_SESSION_SECONDS)}
-                </span>
+                <span className="font-medium">Walking Radar Active</span>
               </div>
               <span className="text-[var(--text-secondary)] font-medium">
                 {isAnalyzingFrame ? 'Reasoning...' : 'Connected to MCP Server'}
