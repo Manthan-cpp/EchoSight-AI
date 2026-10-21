@@ -112,7 +112,8 @@ if (isStdioMode) {
           return;
         }
         const frameBuffer = Buffer.from(args.image_base64, 'base64');
-        const prevBuffer = args.prev_frame_base64 ? Buffer.from(args.prev_frame_base64, 'base64') : null;
+        const prevRaw = args.prev_frame_base64 || args.previous_frame_base64;
+        const prevBuffer = prevRaw ? Buffer.from(prevRaw, 'base64') : null;
         const result = await describeSurroundingsFrame(
           frameBuffer,
           args.mime_type || 'image/jpeg',
@@ -177,7 +178,8 @@ if (isStdioMode) {
           res.status(400).json({ error: 'Missing required query parameter' });
           return;
         }
-        const imageBuffer = args.image_base64 ? Buffer.from(args.image_base64, 'base64') : undefined;
+        const imgRaw = args.image_base64 || args.current_frame_base64;
+        const imageBuffer = imgRaw ? Buffer.from(imgRaw, 'base64') : undefined;
         const result = await locateSpatialObject(
           args.query,
           args.spatial_pins_json || '[]',

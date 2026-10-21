@@ -42,10 +42,12 @@ function getAiClient(): GoogleGenAI {
 }
 
 const CANDIDATE_MODELS = [
-  process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite',
-  'gemini-3.1-flash-lite',
-  'gemini-flash-lite-latest',
+  process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite',
+  'gemini-3.5-flash-lite',
   'gemini-3.6-flash',
+  'gemini-3.5-flash',
+  'gemini-flash-lite-latest',
+  'gemini-3.1-flash-lite',
 ];
 
 function getModelName(): string {
@@ -323,11 +325,11 @@ export async function describeSurroundingsFrame(
 ): Promise<PipelineResult> {
   // Check frame difference
   const diff = calculateFrameDifference(prevFrameBuffer, frameBuffer);
-  // If frame changed less than 6% and we had a previous frame, skip API call to conserve quota and avoid repetitive speech
-  if (prevFrameBuffer && diff < 0.06) {
+  // If frame changed less than 5% and we had a previous frame, skip LLM call to conserve quota and avoid repeating
+  if (prevFrameBuffer && diff < 0.05) {
     return {
-      spokenText: 'Path remains clear.',
-      detailedText: 'Frame difference is negligible (<6%). Skipped redundant LLM call.',
+      spokenText: priorContext || 'Scene remains unchanged.',
+      detailedText: 'Frame difference is negligible (<5%). Skipped redundant LLM call.',
       confidence: 'high',
       isUnchanged: true,
       proactiveInsight: 'Scene is static.',
@@ -335,20 +337,21 @@ export async function describeSurroundingsFrame(
   }
 
   const ai = getAiClient();
-  const prompt = `You are EchoSight delivering real-time walking assistance to a blind user.
-CRITICAL MANDATE FOR WALKING SPEED:
-- Keep your response extremely brief: strictly 1 to 2 short, punchy sentences (maximum 15 to 20 words total).
-- State ONLY what is vital for safe movement right now:
-  1. Is the walkway ahead open or blocked?
-  2. Note any immediate obstacle or opening with relative direction ("straight ahead", "to your right", "to your left").
-- Do NOT describe wallpaper patterns, colors, lighting, or distant background items.
-${
-  priorContext
-    ? `Prior observation was: "${priorContext}".
-If the walkway is largely the same or remains open, do NOT repeat the previous description. Say strictly: "Path ahead remains clear." or "Still clear ahead." (under 4 words).`
-    : ''
-}
-Format as clean, rapid spoken text.`;
+  const prompt = `You are EchoSight, real-time walking eyes and collision prevention for a blind person.
+Analyze what is directly in front of their camera right now.
+
+GROUND TRUTH RULES:
+1. OBSTACLES & PEOPLE TAKE HIGHEST PRIORITY:
+   - If a person or face is directly in front of the camera, warn them immediately: e.g. "Stop, a person is standing directly in front of you."
+   - If a wall, closed door, desk, screen, furniture, or barrier is close in front of the camera, state clearly: e.g. "Wall directly ahead, no path forward" or "Desk directly in front of you."
+2. NEVER FABRICATE OR HALLUCINATE:
+   - NEVER say "path is clear" or "open space" unless there is visible, unobstructed floor or ground to walk on.
+   - If the camera is facing a person, a wall, an indoor room barrier, or is blocked, NEVER say the path is clear.
+3. CONCISE WALKING GUIDANCE:
+   - Strictly 1 to 2 short, punchy sentences (maximum 12 to 15 words).
+   - If the view has genuinely not changed from prior observation ("${priorContext || ''}"), do not repeat long descriptions—give a brief update like "Person still directly ahead" or "Wall still ahead".
+
+State current walking safety:`;
 
   const response = await generateWithRetry({
     model: getModelName(),
@@ -368,7 +371,7 @@ Format as clean, rapid spoken text.`;
     ],
     config: {
       systemInstruction: SYSTEM_INSTRUCTION,
-      temperature: 0.2,
+      temperature: 0.1,
     },
   });
 
@@ -403,15 +406,22 @@ export async function answerFollowup(
   const isScorecardContext = /scorecard|cricket|overs|wickets|batsman|bowler|runs/i.test(priorContext);
   const contextSubject = isScorecardContext ? 'match scorecard' : 'visual surroundings';
 
-  const prompt = `You are EchoSight answering a follow-up question from a blind or low-vision user about their ${contextSubject}.
-Prior Context / Recent Description:
+  const prompt = `You are EchoSight answering a question from a blind or low-vision user about their immediate surroundings or loaded media.
+User Question: "${question}"
+
+PRIOR CONTEXT:
 """
 ${priorContext || 'No previous context recorded.'}
 """
 
-User Follow-Up Question: "${question}"
-
-${brevityInstruction} Maintain calm, clear speech phrasing. Do not ask for or mention scorecards unless the prior context was explicitly a sports match.`;
+STRICT VISUAL GROUND TRUTH RULES:
+1. If an image or camera frame is attached, ALWAYS inspect the image directly as the single source of truth.
+2. NEVER invent, fabricate, or hallucinate objects, benches, obstacles, or open spaces that do not physically exist in the image.
+3. If the user asks if they can walk or move forward:
+   - If a person is directly in front, warn them clearly: e.g. "No, a person is standing directly in front of you."
+   - If a wall, desk, or barrier is directly in front, warn them clearly: e.g. "No, a wall is directly ahead."
+   - Only say yes if there is genuine open, unobstructed floor space visible.
+4. ${brevityInstruction} Maintain natural spoken phrasing for voice output.`;
 
   const parts: any[] = [{ text: prompt }];
 
@@ -429,7 +439,7 @@ ${brevityInstruction} Maintain calm, clear speech phrasing. Do not ask for or me
     contents: [{ role: 'user', parts }],
     config: {
       systemInstruction: SYSTEM_INSTRUCTION,
-      temperature: 0.2,
+      temperature: 0.1,
     },
   });
 

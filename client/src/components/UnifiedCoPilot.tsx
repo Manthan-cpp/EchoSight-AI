@@ -290,13 +290,27 @@ export function UnifiedCoPilot({
     const canvas = canvasRef.current;
     if (!video || !canvas || video.readyState < 2) return null;
 
-    canvas.width = video.videoWidth || 640;
-    canvas.height = video.videoHeight || 480;
+    // Constrain resolution to max 800px for instant encoding and low-latency API transport
+    const maxDim = 800;
+    let width = video.videoWidth || 640;
+    let height = video.videoHeight || 480;
+    if (width > maxDim || height > maxDim) {
+      if (width > height) {
+        height = Math.round((height * maxDim) / width);
+        width = maxDim;
+      } else {
+        width = Math.round((width * maxDim) / height);
+        height = maxDim;
+      }
+    }
+
+    canvas.width = width;
+    canvas.height = height;
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
 
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.80);
     return dataUrl.split(',')[1] || null;
   };
 
