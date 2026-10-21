@@ -662,6 +662,12 @@ export function UnifiedCoPilot({
     const trimmed = question.trim();
     if (!trimmed) return;
 
+    // Direct routing: if inquiry is asking where an item is or was kept, query spatial memory
+    if (isWhereIsCommand(trimmed)) {
+      handleLocateObject(trimmed);
+      return;
+    }
+
     // Instant interruption of any ongoing speech
     stopSpeaking();
     setIsSpeaking(false);
@@ -694,6 +700,10 @@ export function UnifiedCoPilot({
         prior_context: priorContextRef.current || 'User is interacting with EchoSight.',
         image_base64: imageBase64,
         mime_type: mimeType,
+        spatial_pins_json:
+          spatialPinsRef.current.length > 0
+            ? JSON.stringify(spatialPinsRef.current)
+            : undefined,
       });
 
       if (token !== queryTokenRef.current) return;
@@ -722,9 +732,16 @@ export function UnifiedCoPilot({
 
   const handleFollowupSubmit = (e: FormEvent) => {
     e.preventDefault();
-    if (followupText.trim()) {
-      executeFollowupQuery(followupText.trim());
+    const query = followupText.trim();
+    if (!query) return;
+
+    if (isWhereIsCommand(query)) {
+      setFollowupText('');
+      handleLocateObject(query);
+      return;
     }
+
+    executeFollowupQuery(query);
   };
 
   // =========================================================================
@@ -988,20 +1005,49 @@ export function UnifiedCoPilot({
   };
 
   const isPinCommand = (text: string): boolean => {
+    const lower = text.toLowerCase().trim();
+
+    // If it is an inquiry asking where an item was kept/left/placed, it is a lookup, NOT a pin!
+    if (isWhereIsCommand(lower)) {
+      return false;
+    }
+
     return (
-      /\bremember\s+where\b/i.test(text) ||
-      /\bpin\s+(my|the|this|an?|[a-z0-9]+)\b/i.test(text) ||
-      /\b(remember|save|track)\s+(this|my|the)\s+(item|object|keys?|wallet|bottle|glasses|phone|bag|backpack|cup|plate|laptop|charger|badge|book|medicine|pills?)\b/i.test(text) ||
-      /^(pin this|pin object|remember this|pin item|remember location)$/i.test(text)
+      /\b(?:pin|track|save)\s+(?:this|my|the|an?|[a-z0-9]+)\b/i.test(lower) ||
+      /\bremember\s+(?:where\s+(?:my|the)|this|location)\b/i.test(lower) ||
+      /^(pin this|pin object|remember this|pin item|remember location)$/i.test(lower)
     );
   };
 
   const isWhereIsCommand = (text: string): boolean => {
-    return (
-      /\bwhere\s+(?:did\s+i\s+(?:put|leave|place)|are|is|have\s+i\s+put|'s)\b/i.test(text) ||
-      /\b(find|locate|search\s+for)\s+(?:my|the)\b/i.test(text) ||
-      /\bwhere('s|\s+is|\s+are)\b.*\b(keys?|wallet|bottle|glasses|phone|bag|backpack|laptop|charger|badge|book|medicine|pills?|item)\b/i.test(text)
-    );
+    const lower = text.toLowerCase().trim();
+
+    // 1. Direct retrieval questions (e.g. "Do you remember where I kept my smartphone?", "Now can you tell me where my smartphone is")
+    if (
+      /\b(?:do\s+you\s+remember|can\s+you\s+tell\s+me|tell\s+me|show\s+me|know)\s+where\b/i.test(lower) ||
+      /\bwhere\s+(?:did\s+i|have\s+i|can\s+i|was|is|are|'s)\b/i.test(lower) ||
+      /\bwhere\s+(?:i\s+)?(?:kept|put|left|placed|set|dropped)\b/i.test(lower) ||
+      /\bwhere\s+.*?\b(?:is|are|was|were)\b/i.test(lower) ||
+      /\b(?:find|locate|search\s+for|look\s+for)\s+(?:my|the)\b/i.test(lower) ||
+      /\b(?:have\s+you\s+seen|did\s+you\s+see)\s+(?:my|the)\b/i.test(lower)
+    ) {
+      return true;
+    }
+
+    // 2. Dynamic check: if user mentions any currently pinned item with an inquiry word
+    if (spatialPinsRef.current && spatialPinsRef.current.length > 0) {
+      const mentionsPinnedItem = spatialPinsRef.current.some((pin) =>
+        lower.includes(pin.item.toLowerCase())
+      );
+      if (
+        mentionsPinnedItem &&
+        /\b(where|find|locate|kept|put|left|placed|seen|lost|remember)\b/i.test(lower)
+      ) {
+        return true;
+      }
+    }
+
+    return false;
   };
 
   const isListPinsCommand = (text: string): boolean => {

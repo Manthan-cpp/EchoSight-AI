@@ -392,7 +392,8 @@ export async function answerFollowup(
   question: string,
   priorContext: string,
   imageBuffer?: Buffer,
-  mimeType?: string
+  mimeType?: string,
+  spatialPinsJson?: string
 ): Promise<PipelineResult> {
   if (!question || !question.trim()) {
     throw new Error('Follow-up question cannot be empty.');
@@ -403,17 +404,27 @@ export async function answerFollowup(
     ? 'Provide an exhaustive, structured, line-by-line description covering all elements.'
     : 'Provide a direct, punchy answer in strictly 1 to 2 short sentences (under 20 words). Answer immediately without introductory filler or restating the entire prior scene.';
 
-  const isScorecardContext = /scorecard|cricket|overs|wickets|batsman|bowler|runs/i.test(priorContext);
-  const contextSubject = isScorecardContext ? 'match scorecard' : 'visual surroundings';
+  const hasPins = spatialPinsJson && spatialPinsJson !== '[]' && spatialPinsJson.length > 5;
 
-  const prompt = `You are EchoSight answering a question from a blind or low-vision user about their immediate surroundings or loaded media.
+  const prompt = `You are EchoSight answering a question from a blind or low-vision user about their immediate surroundings, misplaced items, or loaded media.
 User Question: "${question}"
 
 PRIOR CONTEXT:
 """
 ${priorContext || 'No previous context recorded.'}
 """
-
+${
+  hasPins
+    ? `
+RECORDED SPATIAL MEMORY PINS (ITEMS USER ASKED TO REMEMBER):
+"""
+${spatialPinsJson}
+"""
+CRITICAL SPATIAL MEMORY RULE:
+If the user's question asks where an item is or where they kept, placed, or left it (e.g., smartphone, keys, bottle, wallet), check the Recorded Spatial Memory Pins above. Tell them exactly where it was recorded (e.g. "Your smartphone was pinned on the bed to the right of the blue feature phone."). Do NOT say you cannot find it if it is recorded in the Spatial Memory Pins!
+`
+    : ''
+}
 STRICT VISUAL GROUND TRUTH RULES:
 1. If an image or camera frame is attached, ALWAYS inspect the image directly as the single source of truth.
 2. NEVER invent, fabricate, or hallucinate objects, benches, obstacles, or open spaces that do not physically exist in the image.
@@ -549,9 +560,9 @@ ${spatialPinsJson || 'No pinned items recorded.'}
 Instructions:
 1. Find the matching pinned item that best matches what the user is asking for.
 2. If current camera frame is provided:
-   - Check if the pinned object or its landmark is visible right now.
-   - If visible, guide the user's hand or direction immediately (e.g., "I see your water bottle right in front of you, about two feet away on the desk to your right.").
-   - If not in current view, tell the user where it was pinned, how long ago, and which way to turn (e.g., "You pinned your water bottle on the dining table next to the laptop. Turn slightly to your left towards the dining table.").
+   - Check if the pinned object or its landmark is visible right now in the image.
+   - If visible: Guide the user directly to it with immediate positioning (e.g., "I see your smartphone right in front of you on the bed, just to the right.").
+   - If NOT in current view: ALWAYS recall the recorded location from memory! State clearly where it was pinned and instruct the user which way to turn (e.g., "Your smartphone was pinned on the bed to the right of the blue feature phone. Turn toward the bed to locate it."). NEVER simply say you cannot see it without stating its recorded memory location!
 3. If no camera frame is provided:
    - Tell the user the recorded landmark and position in a clear, patient auditory sentence (e.g. "Your water bottle was pinned on the wooden dining table to the right of the laptop, seen 4 minutes ago.").
 4. If no pin exists for this item:

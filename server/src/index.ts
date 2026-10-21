@@ -158,7 +158,8 @@ if (isStdioMode) {
           args.question,
           args.prior_context || '',
           imageBuffer,
-          args.mime_type
+          args.mime_type,
+          args.spatial_pins_json
         );
         res.json(result);
       } else if (toolName === 'pin_spatial_object') {
