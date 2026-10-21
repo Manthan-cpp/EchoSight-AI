@@ -20,6 +20,16 @@ export interface PipelineResult {
   confidence: 'high' | 'medium' | 'low';
   proactiveInsight?: string;
   isUnchanged?: boolean;
+  safety?: WalkingSafetyAssessment;
+}
+
+export type WalkingSafetyStatus = 'clear' | 'stop' | 'caution' | 'left' | 'right' | 'slow' | 'unknown';
+
+export interface WalkingSafetyAssessment {
+  status: WalkingSafetyStatus;
+  direction: 'left' | 'right' | 'none';
+  hazard?: string;
+  confidence: 'high' | 'medium' | 'low';
 }
 
 // Hard limits governed by PLAN.md Sections 1a and 5
@@ -28,23 +38,109 @@ export const HARD_LIMITS = {
   MAX_VIDEO_SIZE_BYTES: 25 * 1024 * 1024, // 25 MB
   MAX_VIDEO_DURATION_SECONDS: 30,
   MAX_SURROUNDINGS_SESSION_MINUTES: 5,
-  CADENCE_SECONDS: 5,
+  CADENCE_SECONDS: 2.5,
   SUPPORTED_IMAGE_MIME: ['image/jpeg', 'image/png', 'image/webp'],
   SUPPORTED_VIDEO_MIME: ['video/mp4', 'video/webm'],
 };
 
-// Singleton Gemini client
-let aiClient: GoogleGenAI | null = null;
+interface GeminiClientSlot {
+  keyName: string;
+  client: GoogleGenAI;
+  requestTimes: number[];
+  blockedUntil: number;
+  failureCount: number;
+}
 
-function getAiClient(): GoogleGenAI {
-  if (!aiClient) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      throw new Error('GEMINI_API_KEY is not defined in server environment');
-    }
-    aiClient = new GoogleGenAI({ apiKey });
+let geminiClientSlots: GeminiClientSlot[] | null = null;
+let nextGeminiSlot = 0;
+
+export function getConfiguredGeminiKeyCount(): number {
+  const keyNames = ['GEMINI_API_KEY', 'GEMINI_API_KEY1', 'GEMINI_API_KEY2', 'GEMINI_API_KEY3'];
+  return new Set(
+    keyNames
+      .map((keyName) => process.env[keyName]?.trim())
+      .filter((value): value is string => Boolean(value))
+  ).size;
+}
+
+function getGeminiClientSlots(): GeminiClientSlot[] {
+  if (geminiClientSlots) return geminiClientSlots;
+
+  const keyNames = ['GEMINI_API_KEY', 'GEMINI_API_KEY1', 'GEMINI_API_KEY2', 'GEMINI_API_KEY3'];
+  const seenKeys = new Set<string>();
+  geminiClientSlots = keyNames
+    .map((keyName) => ({ keyName, value: process.env[keyName]?.trim() || '' }))
+    .filter(({ value }) => value && !seenKeys.has(value))
+    .map(({ keyName, value }) => {
+      seenKeys.add(value);
+      return {
+        keyName,
+        client: new GoogleGenAI({ apiKey: value }),
+        requestTimes: [],
+        blockedUntil: 0,
+        failureCount: 0,
+      };
+    });
+
+  if (geminiClientSlots.length === 0) {
+    throw new Error('No Gemini API key is configured. Set GEMINI_API_KEY or GEMINI_API_KEY1/2/3.');
   }
-  return aiClient;
+
+  console.log(`[EchoSight] Gemini key pool ready: ${geminiClientSlots.length} unique project key(s).`);
+  return geminiClientSlots;
+}
+
+function acquireGeminiClient(): GeminiClientSlot {
+  const slots = getGeminiClientSlots();
+  const now = Date.now();
+  const perKeyRpm = Math.max(1, Number.parseInt(process.env.GEMINI_RPM_PER_KEY || '15', 10));
+
+  for (let offset = 0; offset < slots.length; offset += 1) {
+    const index = (nextGeminiSlot + offset) % slots.length;
+    const slot = slots[index];
+    slot.requestTimes = slot.requestTimes.filter((timestamp) => now - timestamp < 60_000);
+    if (slot.blockedUntil > now) continue;
+    if (slot.requestTimes.length < perKeyRpm) {
+      slot.requestTimes.push(now);
+      nextGeminiSlot = (index + 1) % slots.length;
+      return slot;
+    }
+  }
+
+  throw new Error(`All configured Gemini projects are at their ${perKeyRpm} RPM request limit.`);
+}
+
+function isQuotaOrTransientError(error: any): boolean {
+  const message = String(error?.message || '');
+  return (
+    error?.status === 429 ||
+    error?.status === 503 ||
+    message.includes('429') ||
+    message.includes('503') ||
+    message.includes('quota') ||
+    message.includes('RESOURCE_EXHAUSTED') ||
+    message.includes('high demand') ||
+    message.includes('timed out')
+  );
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      reject(new Error(`Gemini request timed out after ${timeoutMs}ms.`));
+    }, timeoutMs);
+
+    promise.then(
+      (value) => {
+        clearTimeout(timeoutId);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timeoutId);
+        reject(error);
+      }
+    );
+  });
 }
 
 const CANDIDATE_MODELS = [
@@ -58,39 +154,46 @@ function getModelName(): string {
 }
 
 /**
- * Resilient caller with automatic multi-model fallback cascade and exponential backoff.
+ * Low-latency Gemini caller with project-key rotation and a hard request deadline.
+ * Key rotation is round-robin and quota-aware; it never exposes keys to the client.
  */
-async function generateWithRetry(baseParams: any, maxRetries = 2): Promise<any> {
-  const ai = getAiClient();
+async function generateWithRetry(
+  baseParams: any,
+  maxAttempts = 2,
+  timeoutMs = Number.parseInt(process.env.GEMINI_REQUEST_TIMEOUT_MS || '12000', 10)
+): Promise<any> {
   const modelsToTry = Array.from(new Set(CANDIDATE_MODELS));
   let lastError: any = null;
 
-  for (const model of modelsToTry) {
-    let delay = 2000;
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        const params = { ...baseParams, model };
-        return await ai.models.generateContent(params);
-      } catch (err: any) {
-        lastError = err;
-        const msg = String(err.message || '');
-        const isQuotaExhausted =
-          err.status === 429 ||
-          msg.includes('429') ||
-          msg.includes('quota') ||
-          msg.includes('RESOURCE_EXHAUSTED');
-        const isTransient503 =
-          err.status === 503 ||
-          msg.includes('503') ||
-          msg.includes('high demand');
+  for (let attempt = 0; attempt < Math.max(1, maxAttempts); attempt += 1) {
+    const slot = acquireGeminiClient();
+    const model = modelsToTry[Math.min(attempt, modelsToTry.length - 1)];
 
-        if (isQuotaExhausted || isTransient503) {
-          console.warn(`[EchoSight] Model ${model} unavailable, cascading to next model...`);
-          break; // Cascade to next model immediately
-        }
+    try {
+      const params = { ...baseParams, model };
+      const response = await withTimeout(
+        slot.client.models.generateContent(params),
+        timeoutMs
+      );
+      slot.failureCount = 0;
+      slot.blockedUntil = 0;
+      return response;
+    } catch (err: any) {
+      lastError = err;
+      const quotaOrTransient = isQuotaOrTransientError(err);
 
-        break;
+      if (quotaOrTransient) {
+        slot.failureCount += 1;
+        const cooldownMs = Math.min(30_000, 2_000 * 2 ** Math.min(slot.failureCount - 1, 4));
+        slot.blockedUntil = Date.now() + cooldownMs;
+        console.warn(`[EchoSight] ${slot.keyName} failed; cooling it down for ${cooldownMs}ms: ${err.message}`);
       }
+
+      if (!quotaOrTransient || attempt + 1 >= maxAttempts) {
+        throw err;
+      }
+
+      console.warn(`[EchoSight] ${slot.keyName} unavailable; rotating Gemini project key.`);
     }
   }
 
@@ -141,7 +244,6 @@ export async function analyzeStillImage(
     };
   }
 
-  const ai = getAiClient();
   const prompt = `Perform an exhaustive, structured visual description of this image.
 Lead with the single most notable insight, then describe layout, specific components, labels, and underlying meaning.
 - If this is a sports scorecard or match graphic: Reason about match context, teams, current score, overs, wickets, run rate, required rate, momentum, player innings, and key match takeaways.
@@ -195,7 +297,6 @@ export async function analyzeScorecard(
     throw new Error('Scorecard image exceeds 10MB limit.');
   }
 
-  const ai = getAiClient();
   const prompt = `Examine this sports scorecard/match graphic.
 Do not merely transcribe raw numbers. Explain what they MEAN:
 1. What teams/players are involved and what match stage is shown?
@@ -250,7 +351,6 @@ export async function narrateVideoClip(
     throw new Error(`Unsupported video format: ${mimeType}. Expected MP4 or WebM.`);
   }
 
-  const ai = getAiClient();
   const prompt = `Narrate this video clip chronologically from start to finish as one continuous scene.
 Describe who or what is present, what action occurs, how movement develops, and any changes in the environment.
 Structure your narration in calm, natural spoken sentences.`;
@@ -319,7 +419,6 @@ export async function describeSurroundingsFrame(
   prevFrameBuffer: Buffer | null = null,
   priorContext: string = ''
 ): Promise<PipelineResult> {
-  const ai = getAiClient();
   const prompt = `You are EchoSight, real-time walking eyes and navigational guide for a completely blind person.
 Analyze the camera frame to guide their physical footsteps safely right now.
 
@@ -365,11 +464,11 @@ State current walking safety:`;
     },
   });
 
-  const text = response.text?.trim() || 'Path is clear ahead, safe to walk.';
+  const text = response.text?.trim() || 'Path status unclear. Stop and wait.';
   return {
     spokenText: text,
     detailedText: text,
-    confidence: 'high',
+    confidence: 'medium',
     isUnchanged: false,
     proactiveInsight: text.split('.')[0] || 'Surroundings updated.',
   };
@@ -457,27 +556,67 @@ STRICT VISUAL GROUND TRUTH & DIRECTIONAL NAVIGATION RULES:
   };
 }
 
+function normalizeWalkingSafety(rawText: string): WalkingSafetyAssessment {
+  const text = rawText.trim().replace(/^```(?:json)?|```$/gi, '').trim();
+  const lower = text.toLowerCase();
+  const direction = /\bleft\b/.test(lower) && !/\bright\b/.test(lower)
+    ? 'left'
+    : /\bright\b/.test(lower) && !/\bleft\b/.test(lower)
+      ? 'right'
+      : 'none';
+
+  let status: WalkingSafetyStatus = 'unknown';
+  if (/\b(stop|blocked|wall|closed door|barrier|desk|bed|chair|obstacle)\b/.test(lower)) {
+    status = 'stop';
+  } else if (/\b(slow|cautious|narrow|congested|doorway|opening|careful)\b/.test(lower)) {
+    status = 'slow';
+  } else if (direction === 'left') {
+    status = 'left';
+  } else if (direction === 'right') {
+    status = 'right';
+  } else if (/\b(clear|safe|open|unobstructed)\b/.test(lower)) {
+    status = 'clear';
+  }
+
+  const hazard = status === 'clear' || status === 'unknown'
+    ? undefined
+    : text.replace(/^(stop|move|turn|walk|go|slow down|proceed)\b[,:]?\s*/i, '').trim();
+
+  return {
+    status,
+    direction,
+    hazard: hazard || undefined,
+    confidence: status === 'unknown' ? 'low' : 'medium',
+  };
+}
+
 /**
- * Instant Ultra-Low Latency Walking Path Verification.
- * Sub-second collision avoidance check for blind navigation.
+ * Low-latency walking path verification.
+ * Missing or ambiguous output never becomes "path clear".
  */
 export async function instantPathCheck(
   imageBuffer: Buffer,
   mimeType: string
 ): Promise<PipelineResult> {
-  const prompt = `You are EchoSight instant collision radar for a walking blind person.
-Look directly at the immediate walking path (floor and center ahead).
-Is it safe to step forward right now?
+  if (!imageBuffer.length || imageBuffer.length > HARD_LIMITS.MAX_IMAGE_SIZE_BYTES) {
+    throw new Error('Walking frame is empty or exceeds the 10MB image limit.');
+  }
+  if (!HARD_LIMITS.SUPPORTED_IMAGE_MIME.includes(mimeType)) {
+    throw new Error(`Unsupported walking frame format: ${mimeType}.`);
+  }
 
-CRITICAL ACCURACY RULES:
-1. If clear floor, ground, or open corridor is ahead:
-   Respond: "Path is clear ahead, safe to walk."
-2. If an obstacle blocks the immediate forward step:
-   State: "Stop, [exact object] directly ahead." (e.g. "Stop, wall ahead.", "Stop, closed door ahead.", "Stop, desk ahead.", "Stop, chair in path.")
-3. If approaching a doorway or opening:
-   State: "Doorway ahead, move carefully through center."
-4. ONLY report a person if an actual living human being is clearly visible right in front. Do NOT guess or mistake furniture, doors, shadows, or reflections for people.
-5. Keep answer under 7 words. Answer immediately:`;
+  const prompt = `You are EchoSight's urgent walking-safety camera.
+Inspect only the immediate path directly ahead and nearby side hazards.
+Respond with ONE short spoken instruction, 4 to 12 words.
+
+RULES:
+1. If the immediate floor is genuinely clear: "Path clear ahead."
+2. If anything blocks the next step: "Stop. [object] directly ahead."
+3. If a safe side route is clearly visible: "Move slightly left/right; path open."
+4. If the area is narrow, crowded, or a doorway needs care: "Slow down; narrow passage." or "Doorway ahead; move carefully."
+5. If visibility or certainty is insufficient: "Stop. Path not verified."
+6. Only report a person when an actual living human is clearly visible. Never guess from furniture, shadows, doors, or clothing.
+7. Never say "path clear" when a wall, closed door, bed, desk, chair, or barrier is ahead.`;
 
   const response = await generateWithRetry({
     model: getModelName(),
@@ -497,16 +636,19 @@ CRITICAL ACCURACY RULES:
     ],
     config: {
       temperature: 0.0,
-      maxOutputTokens: 18,
+      maxOutputTokens: 24,
     },
-  });
+  }, 1, 4000);
 
-  const text = response.text?.trim() || 'Path status unclear. Proceed with caution.';
+  const text = response.text?.trim() || 'Stop. Path not verified.';
+  const safety = normalizeWalkingSafety(text);
+  const safeText = safety.status === 'unknown' ? 'Stop. Path not verified.' : text;
   return {
-    spokenText: text,
-    detailedText: text,
-    confidence: 'high',
-    proactiveInsight: text,
+    spokenText: safeText,
+    detailedText: safeText,
+    confidence: safety.confidence,
+    proactiveInsight: safeText,
+    safety,
   };
 }
 

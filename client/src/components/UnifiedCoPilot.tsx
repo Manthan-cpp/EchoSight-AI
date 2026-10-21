@@ -19,7 +19,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { callTool, type ToolResult } from '../services/mcpClient';
+import { callTool, getServerCapabilities, type ToolResult } from '../services/mcpClient';
 import {
   speakText,
   stopSpeaking,
@@ -78,7 +78,10 @@ export function UnifiedCoPilot({
   const [isAnalyzingFrame, setIsAnalyzingFrame] = useState<boolean>(false);
   const [cameraFacing, setCameraFacing] = useState<'environment' | 'user'>('environment');
   const sessionSecondsRef = useRef<number>(0);
-  const cadenceSeconds = 5;
+  // The server advertises a safe cadence based on its configured key pool.
+  // Five seconds is the conservative fallback for a single-key deployment.
+  const cadenceSecondsRef = useRef<number>(5);
+  const contextIntervalRef = useRef<number>(30_000);
   const MAX_SESSION_SECONDS = 300; // 5 min safety cap
 
   // --- Snapshot & Loaded Media State ---
@@ -128,6 +131,14 @@ export function UnifiedCoPilot({
   const sessionTimerRef = useRef<any>(null);
   const priorContextRef = useRef<string>('');
   const prevFrameRef = useRef<string | null>(null);
+  const latestSafetyRef = useRef<ToolResult['safety'] | null>(null);
+  const latestSafetyAtRef = useRef<number>(0);
+  const lastSafetyStatusRef = useRef<string | null>(null);
+  const lastSafetySpeechAtRef = useRef<number>(0);
+  const lastRadarErrorAtRef = useRef<number>(0);
+  const safetyFailureStreakRef = useRef<number>(0);
+  const nextSafetyAttemptAtRef = useRef<number>(0);
+  const lastContextRequestAtRef = useRef<number>(0);
 
   const selectedFileRef = useRef<File | null>(null);
   const fileBase64Ref = useRef<string | null>(null);
@@ -285,6 +296,13 @@ export function UnifiedCoPilot({
     stopCamera();
     prevFrameRef.current = null;
     priorContextRef.current = '';
+    latestSafetyRef.current = null;
+    latestSafetyAtRef.current = 0;
+    lastSafetyStatusRef.current = null;
+    lastSafetySpeechAtRef.current = 0;
+    safetyFailureStreakRef.current = 0;
+    nextSafetyAttemptAtRef.current = 0;
+    lastContextRequestAtRef.current = 0;
     const success = await startCamera(nextFacing);
     if (success) {
       const label = nextFacing === 'environment' ? 'rear back camera' : 'front selfie camera';
@@ -341,9 +359,22 @@ export function UnifiedCoPilot({
     setActiveAnalysisResult(null);
     prevFrameRef.current = null;
     priorContextRef.current = '';
+    latestSafetyRef.current = null;
+    latestSafetyAtRef.current = 0;
+    lastSafetyStatusRef.current = null;
+    lastSafetySpeechAtRef.current = 0;
+    safetyFailureStreakRef.current = 0;
+    nextSafetyAttemptAtRef.current = 0;
+    lastContextRequestAtRef.current = 0;
 
-    const cameraStarted = await startCamera();
+    const [cameraStarted, serverCapabilities] = await Promise.all([
+      startCamera(),
+      getServerCapabilities(),
+    ]);
     if (!cameraStarted) return;
+
+    cadenceSecondsRef.current = serverCapabilities?.radarCadenceSeconds || 5;
+    contextIntervalRef.current = cadenceSecondsRef.current <= 2.5 ? 12_000 : 30_000;
 
     setMode('radar');
     setIsRadarScanning(true);
@@ -355,12 +386,9 @@ export function UnifiedCoPilot({
     stopSpeaking();
     const startMsg = 'Live Surroundings Radar started. Scanning walking path.';
     addFeedItem({ type: 'system', content: startMsg });
-    speakText(startMsg, () => {
-      // Begin first radar frame analysis
-      if (isRadarScanningRef.current && sessionIdRef.current === currentSessionId) {
-        processCadenceCycle(currentSessionId);
-      }
-    });
+    // Speech is confirmation only. It must never gate the first safety frame.
+    speakText(startMsg);
+    void processCadenceCycle(currentSessionId);
 
     // Session timer for safety cap
     if (sessionTimerRef.current) clearInterval(sessionTimerRef.current);
@@ -376,6 +404,13 @@ export function UnifiedCoPilot({
     isRadarScanningRef.current = false;
     setIsRadarScanning(false);
     sessionIdRef.current += 1;
+    latestSafetyRef.current = null;
+    latestSafetyAtRef.current = 0;
+    lastSafetyStatusRef.current = null;
+    lastSafetySpeechAtRef.current = 0;
+    safetyFailureStreakRef.current = 0;
+    nextSafetyAttemptAtRef.current = 0;
+    lastContextRequestAtRef.current = 0;
 
     if (cadenceTimerRef.current) {
       clearTimeout(cadenceTimerRef.current);
@@ -399,8 +434,24 @@ export function UnifiedCoPilot({
 
   const processCadenceCycle = async (sessionId: number) => {
     if (!isRadarScanningRef.current || sessionId !== sessionIdRef.current) return;
-    if (isProcessingRef.current || isEchoSightSpeaking) {
-      cadenceTimerRef.current = setTimeout(() => processCadenceCycle(sessionId), 1000);
+    if (isProcessingRef.current) {
+      cadenceTimerRef.current = setTimeout(() => processCadenceCycle(sessionId), 250);
+      return;
+    }
+
+    const cycleStartedAt = Date.now();
+    const scheduleNextCycle = () => {
+      if (!isRadarScanningRef.current || sessionId !== sessionIdRef.current) return;
+      const elapsed = Date.now() - cycleStartedAt;
+      const delay = Math.max(250, cadenceSecondsRef.current * 1000 - elapsed);
+      cadenceTimerRef.current = setTimeout(() => processCadenceCycle(sessionId), delay);
+    };
+
+    if (Date.now() < nextSafetyAttemptAtRef.current) {
+      cadenceTimerRef.current = setTimeout(
+        () => processCadenceCycle(sessionId),
+        Math.max(250, nextSafetyAttemptAtRef.current - Date.now())
+      );
       return;
     }
 
@@ -410,58 +461,113 @@ export function UnifiedCoPilot({
 
       const frameBase64 = captureFrameBase64();
       if (!frameBase64) {
-        isProcessingRef.current = false;
-        setIsAnalyzingFrame(false);
-        if (isRadarScanningRef.current) {
-          cadenceTimerRef.current = setTimeout(() => processCadenceCycle(sessionId), 2000);
+        if (Date.now() - lastRadarErrorAtRef.current > 5000) {
+          lastRadarErrorAtRef.current = Date.now();
+          speakText('Camera is still warming up. I am checking the path.');
         }
+        scheduleNextCycle();
         return;
       }
 
-      const result = await callTool('describe_surroundings', {
+      const result = await callTool('check_walking_path', {
         image_base64: frameBase64,
         mime_type: 'image/jpeg',
-        previous_frame_base64: prevFrameRef.current || undefined,
-        prior_context: priorContextRef.current || undefined,
-      });
+      }, { timeoutMs: 5500 });
 
       if (!isRadarScanningRef.current || sessionId !== sessionIdRef.current) return;
 
       prevFrameRef.current = frameBase64;
-      priorContextRef.current = result.spokenText;
+      latestSafetyRef.current = result.safety || {
+        status: 'unknown',
+        direction: 'none',
+        confidence: 'low',
+      };
+      latestSafetyAtRef.current = Date.now();
+      if (!result.error) {
+        priorContextRef.current = result.spokenText;
+      }
 
-      if (result.spokenText) {
+      if (result.error) {
+        safetyFailureStreakRef.current += 1;
+        const backoffMs = Math.min(30_000, 5_000 * 2 ** Math.min(safetyFailureStreakRef.current - 1, 2));
+        nextSafetyAttemptAtRef.current = Date.now() + backoffMs;
+        if (Date.now() - lastRadarErrorAtRef.current > 15_000) {
+          lastRadarErrorAtRef.current = Date.now();
+          speakText('I cannot verify the walking path right now. Stop and wait.');
+        }
+      } else if (result.spokenText) {
+        safetyFailureStreakRef.current = 0;
+        nextSafetyAttemptAtRef.current = 0;
+        const safetyStatus = result.safety?.status || 'unknown';
+        const now = Date.now();
+        const statusChanged = lastSafetyStatusRef.current !== safetyStatus;
+        const isUrgent = ['stop', 'left', 'right', 'slow', 'caution'].includes(safetyStatus);
+        const repeatAfterMs = isUrgent ? 1800 : 6000;
+        const shouldSpeak = statusChanged || now - lastSafetySpeechAtRef.current >= repeatAfterMs;
+
         addFeedItem({
           type: 'radar',
-          title: 'Sensory Observation',
+          title: 'Walking Safety',
           content: result.spokenText,
           proactiveInsight: result.proactiveInsight,
         });
 
-        speakText(result.spokenText, () => {
-          if (isRadarScanningRef.current && sessionId === sessionIdRef.current) {
-            cadenceTimerRef.current = setTimeout(
-              () => processCadenceCycle(sessionId),
-              cadenceSeconds * 1000
-            );
-          }
-        });
-      } else {
-        if (isRadarScanningRef.current && sessionId === sessionIdRef.current) {
-          cadenceTimerRef.current = setTimeout(
-            () => processCadenceCycle(sessionId),
-            cadenceSeconds * 1000
-          );
+        if (shouldSpeak) {
+          lastSafetyStatusRef.current = safetyStatus;
+          lastSafetySpeechAtRef.current = now;
+          speakText(result.spokenText);
         }
       }
+
+      // Add a richer surroundings description periodically without delaying the
+      // urgent safety result. It is intentionally less frequent to preserve quota.
+      if (
+        !result.error &&
+        Date.now() - lastContextRequestAtRef.current >= contextIntervalRef.current
+      ) {
+        lastContextRequestAtRef.current = Date.now();
+        void callTool('describe_surroundings', {
+          image_base64: frameBase64,
+          mime_type: 'image/jpeg',
+          prior_context: priorContextRef.current || undefined,
+        }, { timeoutMs: 7000 }).then((contextResult) => {
+          if (
+            !isRadarScanningRef.current ||
+            sessionId !== sessionIdRef.current ||
+            contextResult.error ||
+            !contextResult.spokenText
+          ) {
+            return;
+          }
+
+          addFeedItem({
+            type: 'radar',
+            title: 'Surroundings',
+            content: contextResult.spokenText,
+            proactiveInsight: contextResult.proactiveInsight,
+          });
+
+          const currentSafety = latestSafetyRef.current?.status;
+          if (
+            currentSafety === 'clear' &&
+            Date.now() - lastSafetySpeechAtRef.current > 1200
+          ) {
+            speakText(contextResult.spokenText);
+          }
+        });
+      }
+
+      scheduleNextCycle();
     } catch (err: any) {
       console.warn('[UnifiedCoPilot] Radar cadence error:', err);
-      if (isRadarScanningRef.current && sessionId === sessionIdRef.current) {
-        cadenceTimerRef.current = setTimeout(
-          () => processCadenceCycle(sessionId),
-          2000
-        );
+      safetyFailureStreakRef.current += 1;
+      const backoffMs = Math.min(30_000, 5_000 * 2 ** Math.min(safetyFailureStreakRef.current - 1, 2));
+      nextSafetyAttemptAtRef.current = Date.now() + backoffMs;
+      if (Date.now() - lastRadarErrorAtRef.current > 15_000) {
+        lastRadarErrorAtRef.current = Date.now();
+        speakText('Walking path verification failed. Stop and wait.');
       }
+      scheduleNextCycle();
     } finally {
       isProcessingRef.current = false;
       setIsAnalyzingFrame(false);
@@ -972,6 +1078,49 @@ export function UnifiedCoPilot({
     );
   };
 
+  const isWalkingSafetyQuestion = (text: string): boolean => {
+    return /\b(can|may|should)\s+i\s+(walk|move|step|go|proceed)(\s+forward)?\b/i.test(text) ||
+      /\b(is|does)\s+(it|the\s+path)\s+(safe|clear)\b/i.test(text) ||
+      /\b(where\s+should|where\s+can|which\s+way)\s+i\s+(move|walk|go|turn)\b/i.test(text) ||
+      /\b(path|way)\s+(clear|safe|blocked)\b/i.test(text);
+  };
+
+  const handleWalkingSafetyQuestion = async () => {
+    stopSpeaking();
+
+    // Answer from the most recent live safety decision whenever it is fresh.
+    if (
+      isRadarScanningRef.current &&
+      priorContextRef.current &&
+      latestSafetyRef.current?.status !== 'unknown' &&
+      Date.now() - latestSafetyAtRef.current < 3000
+    ) {
+      speakText(priorContextRef.current);
+      return;
+    }
+
+    const frameBase64 = captureFrameBase64();
+    if (!frameBase64) {
+      speakText('I cannot see the walking path. Start surroundings first, then try again.');
+      return;
+    }
+
+    const result = await callTool('check_walking_path', {
+      image_base64: frameBase64,
+      mime_type: 'image/jpeg',
+    }, { timeoutMs: 5500 });
+
+    if (result.error) {
+      speakText('I cannot verify the path right now. Stop and wait.');
+      return;
+    }
+
+    latestSafetyRef.current = result.safety || null;
+    latestSafetyAtRef.current = Date.now();
+    priorContextRef.current = result.spokenText;
+    speakText(result.spokenText || 'Stop. Path not verified.');
+  };
+
   const isAnalyzeCommand = (text: string): boolean => {
     return (
       /\banaly[zs]e\b/i.test(text) ||
@@ -1150,6 +1299,13 @@ export function UnifiedCoPilot({
       if (isRadarScanningRef.current || isCameraActive || (videoRef.current && videoRef.current.srcObject)) {
         stopRadar('Camera and radar stopped.');
       }
+      return;
+    }
+
+    // 1b. Live walking safety question: use the latest radar state or the short path check.
+    if (isWalkingSafetyQuestion(lower)) {
+      markCommandHandled(command);
+      void handleWalkingSafetyQuestion();
       return;
     }
 

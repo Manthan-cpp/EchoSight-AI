@@ -13,6 +13,7 @@ import {
   pinSpatialObject,
   locateSpatialObject,
   instantPathCheck,
+  getConfiguredGeminiKeyCount,
 } from './pipeline.js';
 
 dotenv.config();
@@ -50,6 +51,8 @@ if (isStdioMode) {
       service: 'EchoSight MCP Server',
       version: '0.1.0',
       activeSessions: sessions.size,
+      configuredGeminiKeys: getConfiguredGeminiKeyCount(),
+      radarCadenceSeconds: getConfiguredGeminiKeyCount() >= 2 ? 2.5 : 5,
       timestamp: new Date().toISOString(),
     });
   });

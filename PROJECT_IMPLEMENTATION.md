@@ -217,10 +217,11 @@ sequenceDiagram
 * **Security & Permission Gate:** Guarantees that camera and microphone permissions are only requested after the user explicitly triggers entrance, avoiding browser security blocks.
 
 ### 4.2 Surroundings Mode (Real-Time Spatial & Hazard Co-Pilot)
-* **Real-Time Camera Loop:** Streams environment/back-facing camera video at 640×480 resolution.
-* **5-Second Cadence:** Samples an in-memory JPEG frame every 5 seconds.
-* **In-Memory Frame Differencing:** Computes byte-level difference between consecutive frames. If the scene has changed by less than 6%, EchoSight skips the LLM call and announces *"Path remains clear"*, saving API quota and eliminating repetitive narration.
-* **Walking-Speed Spatial Prompting:** Instructs Gemini to speak in strictly 1–2 punchy sentences (under 15–20 words) focused strictly on safe navigation (e.g., *"Open hallway ahead. Closed door on your right"*).
+* **Real-Time Camera Loop:** Streams environment/back-facing camera video at 640px maximum dimension for lower transport latency.
+* **Priority Walking Safety:** Runs a short path-safety check before richer surroundings narration. Safety guidance is allowed to interrupt normal speech and never waits for a previous TTS utterance to finish.
+* **Adaptive Cadence:** Uses a 2.5-second radar cadence when the server has at least two configured Gemini projects, and a conservative 5-second fallback for a single-key deployment. Rich surroundings narration runs less frequently so it cannot block urgent path checks.
+* **Conservative Navigation States:** Normalizes each safety response into clear, stop, slow, left, right, or unknown. Ambiguous, missing, or timed-out results become *"Stop. Path not verified."* rather than a false clear-path response.
+* **Walking-Speed Spatial Prompting:** Instructs Gemini to speak in short, relative guidance focused on immediate obstacles, side hazards, narrow passages, doorways, and safe directional corrections.
 * **5-Minute Safety Watchdog:** Automatically pauses the video cadence after 5 continuous minutes to prevent battery drain and quota runaway, prompting the user with an audible alert.
 * **Clean Teardown:** Disables all video camera tracks, intervals, and memory canvas allocations immediately upon stopping or switching tabs.
 
@@ -378,6 +379,9 @@ Create a `.env` file with the following variables:
 ```ini
 PORT=3001
 GEMINI_API_KEY=your_gemini_api_key_here
+GEMINI_API_KEY1=optional_second_project_key
+GEMINI_API_KEY2=optional_third_project_key
+GEMINI_API_KEY3=optional_fourth_project_key
 GEMINI_MODEL=gemini-2.5-flash
 ```
 
@@ -430,7 +434,7 @@ npm run dev
 2. Listen for the initial spoken greeting: *"EchoSight. Voice-First Spatial and Visual Co-Pilot. Say Enter or tap anywhere to begin."*
 3. Say **"Enter"** or tap the screen.
 4. You will arrive at **Surroundings Mode**:
-   * Say **"start surroundings"** to activate the camera and receive continuous 5-second spatial descriptions.
+   * Say **"start surroundings"** to activate the camera and receive immediate walking-safety guidance followed by continuous spatial updates.
    * Speak any question mid-sentence (e.g., *"What is on the floor?"*) to test **instant barge-in interruption**.
 5. Say **"switch to analysis"** to move to the **Visual Analysis** tab:
    * Say **"open file picker"** $\rightarrow$ tap the screen or press <kbd>Enter</kbd> to launch the native file picker.

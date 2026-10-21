@@ -7,10 +7,28 @@ export interface ToolResult {
   confidence?: 'high' | 'medium' | 'low';
   isUnchanged?: boolean;
   proactiveInsight?: string;
+  safety?: {
+    status: 'clear' | 'stop' | 'caution' | 'left' | 'right' | 'slow' | 'unknown';
+    direction?: 'left' | 'right' | 'none';
+    hazard?: string;
+    confidence: 'high' | 'medium' | 'low';
+  };
   error?: string;
 }
 
-export async function callTool(toolName: string, args: Record<string, any>): Promise<ToolResult> {
+export interface CallToolOptions {
+  timeoutMs?: number;
+}
+
+export async function callTool(
+  toolName: string,
+  args: Record<string, any>,
+  options: CallToolOptions = {}
+): Promise<ToolResult> {
+  const timeoutMs = options.timeoutMs ?? (toolName === 'check_walking_path' ? 4500 : 20000);
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
   try {
     const res = await fetch(`${SERVER_URL}/api/tools/${toolName}`, {
       method: 'POST',
@@ -18,6 +36,7 @@ export async function callTool(toolName: string, args: Record<string, any>): Pro
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(args),
+      signal: controller.signal,
     });
 
     if (!res.ok) {
@@ -32,15 +51,21 @@ export async function callTool(toolName: string, args: Record<string, any>): Pro
       confidence: data.confidence || 'high',
       isUnchanged: data.isUnchanged || false,
       proactiveInsight: data.proactiveInsight,
+      safety: data.safety,
     };
   } catch (err: any) {
     console.error(`[McpClient] Error calling tool ${toolName}:`, err);
+    const message = err?.name === 'AbortError'
+      ? `The ${toolName} request timed out after ${timeoutMs}ms.`
+      : err.message || 'Server connection error.';
     return {
-      spokenText: `EchoSight was unable to process this request. ${err.message || 'Server connection error.'}`,
-      detailedText: `Error invoking MCP tool "${toolName}": ${err.message}`,
+      spokenText: `EchoSight was unable to process this request. ${message}`,
+      detailedText: `Error invoking MCP tool "${toolName}": ${message}`,
       confidence: 'low',
-      error: err.message,
+      error: message,
     };
+  } finally {
+    window.clearTimeout(timeoutId);
   }
 }
 
@@ -50,5 +75,29 @@ export async function checkServerHealth(): Promise<boolean> {
     return res.ok;
   } catch {
     return false;
+  }
+}
+
+export interface ServerCapabilities {
+  configuredGeminiKeys: number;
+  radarCadenceSeconds: number;
+}
+
+export async function getServerCapabilities(): Promise<ServerCapabilities | null> {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 2000);
+
+  try {
+    const res = await fetch(`${SERVER_URL}/health`, { signal: controller.signal });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return {
+      configuredGeminiKeys: Number(data.configuredGeminiKeys) || 0,
+      radarCadenceSeconds: Number(data.radarCadenceSeconds) || 5,
+    };
+  } catch {
+    return null;
+  } finally {
+    window.clearTimeout(timeoutId);
   }
 }

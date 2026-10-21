@@ -20,7 +20,7 @@ export function createEchoSightServer(): McpServer {
   // Tool 1: describe_surroundings (Flagship tool for live camera loop)
   server.tool(
     'describe_surroundings',
-    'Primary tool for live Surroundings Mode. Analyzes incoming camera frame to provide spoken relative spatial descriptions of nearby objects and navigation landmarks at a ~5-second cadence.',
+    'Primary tool for live Surroundings Mode. Analyzes incoming camera frames for concise walking safety, relative spatial guidance, side hazards, and navigation landmarks.',
     {
       image_base64: z.string().describe('Base64-encoded JPEG/PNG/WebP camera frame'),
       mime_type: z.string().optional().default('image/jpeg').describe('MIME format of the frame (e.g. image/jpeg)'),
@@ -323,6 +323,7 @@ export function createEchoSightServer(): McpServer {
           'ask_followup',
           'pin_spatial_object',
           'locate_spatial_object',
+          'check_walking_path',
           'ping',
         ],
         message: message ? `pong: ${message}` : 'pong',
