@@ -1224,36 +1224,24 @@ export function UnifiedCoPilot({
       />
 
       {/* Unified Media Viewport & Command Stage */}
-      <section aria-labelledby="stage-heading" className="card space-y-4">
-        {/* Header with Mode Status & Voice Toggle */}
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border-neutral)] pb-4">
+      <section aria-labelledby="stage-heading" className="card space-y-6">
+        {/* Header with Mode Status & Voice Toggle (No inner divider border) */}
+        <div className="flex flex-wrap items-center justify-between gap-3 pb-3">
           <div>
-            <div className="flex items-center gap-2">
-              <h2 id="stage-heading" className="text-xl font-semibold text-[var(--text-primary)]">
+            <div className="flex items-center gap-2.5">
+              <h2 id="stage-heading" className="text-xl font-bold tracking-tight text-white drop-shadow-sm">
                 Voice Co-Pilot
               </h2>
-              {/* Dynamic Status Pill */}
+              {/* Dynamic Status Pill (Normal Monochrome Glass) */}
               <span
-                className={`text-xs px-2.5 py-0.5 rounded-full font-semibold border flex items-center gap-1.5 ${
-                  isPinningObject || isLocatingObject
-                    ? 'bg-amber-500/10 text-amber-500 border-amber-500/40'
-                    : mode === 'radar'
-                    ? 'bg-[var(--status-listening-bg)] text-[var(--status-listening-text)] border-[var(--status-listening-border)]'
-                    : mode === 'inspection'
-                    ? 'bg-[var(--bg-subtle)] text-[var(--accent-primary)] border-[var(--accent-primary)]'
-                    : 'bg-[var(--bg-subtle)] text-[var(--text-secondary)] border-[var(--border-neutral)]'
-                }`}
+                className="glass-pill text-xs px-3.5 py-1 font-medium flex items-center gap-2 text-white"
                 role="status"
               >
                 <span
                   className={`h-2 w-2 rounded-full ${
-                    isPinningObject || isLocatingObject
-                      ? 'bg-amber-500 animate-pulse'
-                      : mode === 'radar'
-                      ? 'bg-[var(--status-listening-text)] animate-ping'
-                      : mode === 'inspection'
-                      ? 'bg-[var(--accent-primary)]'
-                      : 'bg-[var(--text-secondary)]'
+                    isPinningObject || isLocatingObject || mode === 'radar'
+                      ? 'bg-white animate-pulse'
+                      : 'bg-white/50'
                   }`}
                 />
                 <span>
@@ -1273,33 +1261,31 @@ export function UnifiedCoPilot({
                 </span>
               </span>
             </div>
-            <p className="text-sm text-[var(--text-secondary)] mt-0.5">
+            <p className="text-sm text-white/75 mt-1 font-normal">
               Hands-free visual co-pilot with Spatial Memory. Say &quot;start surroundings&quot;, &quot;remember where my keys are&quot;, or &quot;where did I put my water bottle?&quot;.
             </p>
           </div>
 
-          {/* Voice Control Toggle */}
+          {/* Voice Control Toggle (Normal Monochrome Glass) */}
           <div className="flex items-center gap-2">
             {isSpeechRecognitionSupported() && (
               <button
                 type="button"
                 onClick={toggleVoiceControl}
-                className={`btn-secondary text-xs flex items-center gap-1.5 py-1.5 px-3 rounded-[var(--radius-sm)] ${
-                  isVoiceActive
-                    ? 'border-[var(--status-listening-border)] bg-[var(--status-listening-bg)] text-[var(--status-listening-text)] font-semibold'
-                    : ''
+                className={`glass-pill text-xs flex items-center gap-1.5 py-1.5 px-3.5 cursor-pointer text-white ${
+                  isVoiceActive ? 'bg-white/[0.14] font-medium' : 'text-white/70'
                 }`}
                 aria-pressed={isVoiceActive}
                 aria-label={isVoiceActive ? 'Disable voice control' : 'Enable voice control'}
               >
                 {isVoiceActive ? (
                   <>
-                    <Mic className="h-4 w-4" aria-hidden="true" />
+                    <Mic className="h-4 w-4 text-white" aria-hidden="true" />
                     <span>Voice: Active</span>
                   </>
                 ) : (
                   <>
-                    <MicOff className="h-4 w-4 text-[var(--text-secondary)]" aria-hidden="true" />
+                    <MicOff className="h-4 w-4 text-white/50" aria-hidden="true" />
                     <span>Enable Voice</span>
                   </>
                 )}
@@ -1308,12 +1294,12 @@ export function UnifiedCoPilot({
           </div>
         </div>
 
-        {/* Live Speech Feedback Bar */}
+        {/* Live Speech Feedback Bar (No Inner Border) */}
         {((isVoiceActive && interimSpeech) || isSpeaking) && (
-          <div className="flex flex-wrap items-center justify-between gap-3 text-xs p-2.5 rounded-[var(--radius-sm)] bg-[var(--bg-subtle)] border border-[var(--border-neutral)]">
+          <div className="flex flex-wrap items-center justify-between gap-3 text-xs p-3.5 rounded-[22px] bg-white/[0.04] backdrop-blur-[6px] shadow-sm">
             <div className="flex items-center gap-2">
               {isVoiceActive && interimSpeech && (
-                <span className="text-[var(--accent-primary)] italic font-medium animate-pulse">
+                <span className="text-white italic font-medium animate-pulse">
                   Heard: &quot;{interimSpeech}&quot;
                 </span>
               )}
@@ -1321,8 +1307,8 @@ export function UnifiedCoPilot({
 
             {isSpeaking && (
               <div className="flex items-center gap-2">
-                <span className="text-[var(--accent-primary)] font-semibold flex items-center gap-1.5">
-                  <span className="h-2 w-2 rounded-full bg-[var(--accent-primary)] animate-pulse" />
+                <span className="text-white font-medium flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-full bg-white animate-pulse" />
                   EchoSight Speaking (say Stop or ask a question to interrupt)
                 </span>
                 <button
@@ -1330,10 +1316,10 @@ export function UnifiedCoPilot({
                     stopSpeaking();
                     setIsSpeaking(false);
                   }}
-                  className="btn-secondary text-xs py-0.5 px-2 flex items-center gap-1"
+                  className="glass-pill text-xs py-1 px-3 flex items-center gap-1 cursor-pointer text-white"
                   aria-label="Silence audio"
                 >
-                  <VolumeX className="h-3 w-3" aria-hidden="true" />
+                  <VolumeX className="h-3 w-3 text-white" aria-hidden="true" />
                   <span>Silence</span>
                 </button>
               </div>
@@ -1349,22 +1335,22 @@ export function UnifiedCoPilot({
               fileInputRef.current?.click();
               setIsAwaitingFileTap(false);
             }}
-            className="w-full p-3.5 rounded-[var(--radius-md)] border-2 border-[var(--accent-primary)] bg-[var(--status-listening-bg)] text-[var(--text-primary)] flex items-center justify-between text-left transition-colors"
+            className="w-full p-4 rounded-[26px] bg-white/[0.08] backdrop-blur-[8px] text-white flex items-center justify-between text-left transition-all hover:bg-white/[0.14] cursor-pointer shadow-lg"
             aria-label="Tap to open file chooser dialog"
           >
             <div className="flex items-center gap-3">
-              <Upload className="h-6 w-6 text-[var(--accent-primary)] shrink-0" aria-hidden="true" />
+              <Upload className="h-6 w-6 text-white shrink-0" aria-hidden="true" />
               <div>
-                <p className="font-semibold text-sm text-[var(--text-primary)]">Tap here or press Enter to open File Picker</p>
-                <p className="text-xs text-[var(--text-secondary)]">Voice command detected. Tap anywhere on screen or press Enter to choose your media.</p>
+                <p className="font-semibold text-sm text-white">Tap here or press Enter to open File Picker</p>
+                <p className="text-xs text-white/75">Voice command detected. Tap anywhere on screen or press Enter to choose your media.</p>
               </div>
             </div>
-            <span className="btn-primary text-xs py-1.5 px-3 shrink-0">Open Picker</span>
+            <span className="btn-primary text-xs py-1.5 px-4 shrink-0">Open Picker</span>
           </button>
         )}
 
-        {/* Dynamic Media Viewport (Camera Stream OR Snapshot/Uploaded Media) */}
-        <div className="relative aspect-video max-h-72 w-full overflow-hidden rounded-[var(--radius-md)] border border-[var(--border-neutral)] bg-black flex items-center justify-center">
+        {/* Dynamic Media Viewport (No Inner Border) */}
+        <div className="relative aspect-video max-h-76 w-full overflow-hidden rounded-[26px] bg-black/25 backdrop-blur-[6px] flex items-center justify-center shadow-inner">
           {/* 1. Live Video Viewfinder */}
           <video
             ref={videoRef}
@@ -1378,7 +1364,7 @@ export function UnifiedCoPilot({
 
           {/* 2. Inspection Media Preview (Captured snapshot or uploaded file) */}
           {mode === 'inspection' && previewUrl && (
-            <div className="h-full w-full flex items-center justify-center bg-black">
+            <div className="h-full w-full flex items-center justify-center bg-black/30">
               {detectedType === 'video' ? (
                 <video src={previewUrl} controls className="h-full w-full object-contain" />
               ) : (
@@ -1387,45 +1373,45 @@ export function UnifiedCoPilot({
             </div>
           )}
 
-          {/* 3. Standby Placeholder */}
+          {/* 3. Standby Placeholder (Normal White Eye Icon) */}
           {mode === 'standby' && (
-            <div className="text-center p-6 space-y-2 text-white">
-              <Eye className="mx-auto h-12 w-12 text-[var(--accent-primary)] opacity-80" aria-hidden="true" />
-              <p className="text-base font-semibold">Workspace Ready</p>
-              <p className="text-xs text-slate-300 max-w-sm mx-auto">
+            <div className="text-center p-6 space-y-3 text-white">
+              <Eye className="mx-auto h-12 w-12 text-white/80 opacity-90 drop-shadow-md animate-pulse" aria-hidden="true" />
+              <p className="text-base font-semibold drop-shadow-sm text-white">Workspace Ready</p>
+              <p className="text-xs text-white/75 max-w-sm mx-auto font-normal">
                 Say &quot;start surroundings&quot; for real-time walking guidance, &quot;take a photo&quot; to inspect an object, or &quot;pick a file&quot;.
               </p>
             </div>
           )}
 
-          {/* In-Viewport Radar HUD Banner */}
+          {/* In-Viewport Radar HUD Banner (Normal Monochrome Glass) */}
           {mode === 'radar' && isRadarScanning && (
-            <div className="absolute bottom-3 left-3 right-3 rounded-[var(--radius-sm)] bg-black/75 backdrop-blur-md px-3 py-1.5 text-xs text-white border border-white/20 flex items-center justify-between">
+            <div className="absolute bottom-3 left-3 right-3 glass-pill px-4 py-2 text-xs text-white flex items-center justify-between shadow-md border-0 bg-black/40 backdrop-blur-md">
               <div className="flex items-center gap-2">
-                <span className="h-2 w-2 rounded-full bg-emerald-400 animate-ping" />
-                <span className="font-semibold">Walking Radar Active</span>
+                <span className="h-2 w-2 rounded-full bg-white animate-ping" />
+                <span className="font-medium text-white">Walking Radar Active</span>
               </div>
-              <span className="font-mono text-slate-300">
+              <span className="font-mono text-white/75">
                 {formatTime(sessionSeconds)} / {formatTime(MAX_SESSION_SECONDS)}
               </span>
             </div>
           )}
 
-          {/* In-Viewport Inspection Banner */}
+          {/* In-Viewport Inspection Banner (Normal Monochrome Glass) */}
           {mode === 'inspection' && selectedFile && (
-            <div className="absolute top-3 left-3 rounded-[var(--radius-sm)] bg-black/75 backdrop-blur-md px-2.5 py-1 text-xs text-white border border-white/20 flex items-center gap-2">
-              <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
-              <span className="truncate max-w-[200px]">{selectedFile.name}</span>
+            <div className="absolute top-3 left-3 glass-pill px-3.5 py-1.5 text-xs text-white flex items-center gap-2 shadow-md border-0 bg-black/40 backdrop-blur-md">
+              <CheckCircle2 className="h-3.5 w-3.5 text-white" />
+              <span className="truncate max-w-[200px] font-medium">{selectedFile.name}</span>
             </div>
           )}
         </div>
 
-        {/* Spatial Memory Registry Strip */}
-        <div className="rounded-[var(--radius-sm)] border border-amber-500/30 bg-amber-50/20 dark:bg-amber-950/20 p-3 space-y-2">
+        {/* Spatial Memory Registry Strip (No Inner Border) */}
+        <div className="rounded-[24px] bg-white/[0.03] p-4 space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <MapPin className="h-4 w-4 text-amber-500 shrink-0" />
-              <span className="text-xs font-semibold text-[var(--text-primary)]">
+              <MapPin className="h-4 w-4 text-white/80 shrink-0" />
+              <span className="text-xs font-semibold text-white">
                 Spatial Memory Registry ({spatialPins.length})
               </span>
             </div>
@@ -1433,7 +1419,7 @@ export function UnifiedCoPilot({
               <button
                 type="button"
                 onClick={handleClearAllPins}
-                className="text-[11px] text-[var(--text-secondary)] hover:text-rose-500 transition-colors flex items-center gap-1"
+                className="text-[11px] text-white/60 hover:text-white transition-colors flex items-center gap-1 cursor-pointer"
                 title="Clear all spatial pins"
               >
                 <Trash2 className="h-3 w-3" />
@@ -1443,7 +1429,7 @@ export function UnifiedCoPilot({
           </div>
 
           {spatialPins.length === 0 ? (
-            <p className="text-xs text-[var(--text-secondary)]">
+            <p className="text-xs text-white/70 font-normal">
               No items pinned yet. Point your camera and say &quot;Remember where my keys are&quot; or click &quot;Pin Object&quot;.
             </p>
           ) : (
@@ -1451,18 +1437,18 @@ export function UnifiedCoPilot({
               {spatialPins.map((pin) => (
                 <div
                   key={pin.id}
-                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-amber-500/40 bg-[var(--bg-surface)] text-xs shadow-sm hover:border-amber-500 transition-all group"
+                  className="glass-pill flex items-center gap-2 px-3.5 py-1.5 text-xs shadow-sm group"
                 >
                   <button
                     type="button"
                     onClick={() => handleLocateObject(`Where is my ${pin.item}?`)}
                     disabled={isLocatingObject}
-                    className="flex items-center gap-1.5 text-left"
+                    className="flex items-center gap-1.5 text-left text-white cursor-pointer"
                     title={`Click to locate ${pin.item}`}
                   >
-                    <MapPin className="h-3 w-3 text-amber-500 shrink-0" />
-                    <span className="font-semibold text-[var(--text-primary)]">{pin.item}</span>
-                    <span className="text-[10px] text-[var(--text-secondary)]">({pin.timestamp})</span>
+                    <MapPin className="h-3 w-3 text-white/70 shrink-0" />
+                    <span className="font-semibold text-white">{pin.item}</span>
+                    <span className="text-[10px] text-white/50">({pin.timestamp})</span>
                   </button>
                   <button
                     type="button"
@@ -1470,7 +1456,7 @@ export function UnifiedCoPilot({
                       e.stopPropagation();
                       handleRemovePin(pin.id, pin.item);
                     }}
-                    className="text-[var(--text-secondary)] hover:text-rose-500 ml-1 p-0.5 rounded-full"
+                    className="text-white/50 hover:text-white ml-1 p-0.5 rounded-full cursor-pointer transition-colors"
                     aria-label={`Remove ${pin.item} from spatial memory`}
                   >
                     <X className="h-3 w-3" />
@@ -1481,27 +1467,27 @@ export function UnifiedCoPilot({
           )}
         </div>
 
-        {/* Action Toolbar */}
-        <div className="flex flex-wrap items-center gap-2 pt-1">
+        {/* Action Toolbar (Normal Monochrome Buttons) */}
+        <div className="flex flex-wrap items-center gap-2.5 pt-1">
           {/* Radar Start/Stop Button */}
           {mode === 'radar' ? (
             <button
               type="button"
               onClick={() => stopRadar()}
-              className="btn-primary py-2 px-4 text-xs font-semibold flex items-center gap-2 bg-rose-600 hover:bg-rose-700 text-white"
+              className="btn-secondary py-2.5 px-5 text-xs font-medium flex items-center gap-2 text-white cursor-pointer"
               aria-label="Stop live walking radar"
             >
-              <StopCircle className="h-4 w-4" />
+              <StopCircle className="h-4 w-4 text-white" />
               <span>Stop Radar</span>
             </button>
           ) : (
             <button
               type="button"
               onClick={() => startRadar()}
-              className="btn-primary py-2 px-4 text-xs font-semibold flex items-center gap-2"
+              className="btn-primary py-2.5 px-5 text-xs font-medium flex items-center gap-2 text-white cursor-pointer"
               aria-label="Start live walking radar"
             >
-              <Play className="h-4 w-4" />
+              <Play className="h-4 w-4 text-white" />
               <span>Start Radar</span>
             </button>
           )}
@@ -1511,29 +1497,29 @@ export function UnifiedCoPilot({
             type="button"
             onClick={() => handleCaptureSnapshot(false)}
             disabled={isCapturingPhotoRef.current}
-            className="btn-secondary py-2 px-3 text-xs font-semibold flex items-center gap-1.5"
+            className="btn-secondary py-2.5 px-4 text-xs font-medium flex items-center gap-1.5 cursor-pointer text-white"
             aria-label="Capture camera snapshot"
           >
-            <Camera className="h-4 w-4 text-[var(--accent-primary)]" />
+            <Camera className="h-4 w-4 text-white" />
             <span>Snap Photo</span>
           </button>
 
-          {/* Pin Object Button */}
+          {/* Pin Object Button (Normal Monochrome Glass) */}
           <button
             type="button"
             onClick={() => handlePinObject()}
             disabled={isPinningObject}
-            className="btn-secondary py-2 px-3 text-xs font-semibold flex items-center gap-1.5 border-amber-500/40 text-amber-600 dark:text-amber-400 hover:bg-amber-500/10"
+            className="btn-secondary py-2.5 px-4 text-xs font-medium flex items-center gap-1.5 cursor-pointer text-white"
             aria-label="Pin object in view to spatial memory"
           >
             {isPinningObject ? (
               <>
-                <RefreshCw className="h-4 w-4 animate-spin text-amber-500" />
+                <RefreshCw className="h-4 w-4 animate-spin text-white" />
                 <span>Pinning...</span>
               </>
             ) : (
               <>
-                <MapPin className="h-4 w-4 text-amber-500" />
+                <MapPin className="h-4 w-4 text-white" />
                 <span>Pin Object</span>
               </>
             )}
@@ -1543,29 +1529,29 @@ export function UnifiedCoPilot({
           <button
             type="button"
             onClick={triggerFilePicker}
-            className="btn-secondary py-2 px-3 text-xs font-semibold flex items-center gap-1.5"
+            className="btn-secondary py-2.5 px-4 text-xs font-medium flex items-center gap-1.5 cursor-pointer text-white"
             aria-label="Open file picker to upload media"
           >
-            <Upload className="h-4 w-4 text-[var(--text-secondary)]" />
+            <Upload className="h-4 w-4 text-white" />
             <span>Upload File</span>
           </button>
 
-          {/* Deep Analyze Button (Enabled when media/snapshot is ready) */}
+          {/* Deep Analyze Button */}
           {mode === 'inspection' && selectedFile && (
             <button
               type="button"
               onClick={() => runExhaustiveAnalysis()}
               disabled={isAnalyzingMedia}
-              className="btn-primary py-2 px-4 text-xs font-semibold flex items-center gap-1.5 ml-auto"
+              className="btn-primary py-2.5 px-5 text-xs font-medium flex items-center gap-1.5 ml-auto text-white"
             >
               {isAnalyzingMedia ? (
                 <>
-                  <RefreshCw className="h-4 w-4 animate-spin" />
+                  <RefreshCw className="h-4 w-4 animate-spin text-white" />
                   <span>Analyzing in Detail...</span>
                 </>
               ) : (
                 <>
-                  <Sparkles className="h-4 w-4" />
+                  <Sparkles className="h-4 w-4 text-white" />
                   <span>Explain in Exhaustive Detail</span>
                 </>
               )}
@@ -1584,7 +1570,7 @@ export function UnifiedCoPilot({
                 setMode('standby');
                 speakText('Returned to standby. Say "start surroundings" to resume walking radar.');
               }}
-              className="btn-secondary py-2 px-3 text-xs font-semibold ml-auto"
+              className="btn-secondary py-2.5 px-4 text-xs font-medium ml-auto cursor-pointer text-white"
             >
               Clear
             </button>
@@ -1592,20 +1578,20 @@ export function UnifiedCoPilot({
         </div>
       </section>
 
-      {/* Notices & Alerts */}
+      {/* Notices & Alerts (No Inner Border) */}
       {interruptionNotice && (
         <div
           role="status"
           aria-live="polite"
-          className="p-3 rounded-[var(--radius-sm)] border border-[var(--accent-primary)] bg-[var(--bg-subtle)] text-[var(--text-primary)] flex items-center justify-between text-xs"
+          className="p-4 rounded-[24px] bg-white/[0.06] backdrop-blur-[6px] text-white flex items-center justify-between text-xs shadow-md"
         >
           <div className="flex items-center gap-2">
-            <AlertCircle className="h-4 w-4 text-[var(--accent-primary)] shrink-0" />
+            <AlertCircle className="h-4 w-4 text-white shrink-0" />
             <span>{interruptionNotice}</span>
           </div>
           <button
             onClick={() => setInterruptionNotice(null)}
-            className="font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)] ml-2"
+            className="font-semibold text-white/75 hover:text-white ml-2 transition-colors cursor-pointer"
           >
             Dismiss
           </button>
@@ -1616,12 +1602,12 @@ export function UnifiedCoPilot({
         <div
           role="alert"
           aria-live="assertive"
-          className="p-3 rounded-[var(--radius-sm)] border border-rose-500 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200 flex items-center justify-between text-xs"
+          className="p-4 rounded-[24px] bg-white/[0.08] backdrop-blur-[6px] text-white flex items-center justify-between text-xs shadow-md"
         >
           <span>{errorMessage}</span>
           <button
             onClick={() => setErrorMessage(null)}
-            className="font-semibold ml-2 hover:underline"
+            className="font-semibold ml-2 hover:underline text-white cursor-pointer"
           >
             Dismiss
           </button>
@@ -1629,11 +1615,12 @@ export function UnifiedCoPilot({
       )}
 
       {/* Unified Sensory, Analysis & Conversational Feed */}
-      <section aria-labelledby="feed-heading" className="card space-y-4">
-        <div className="flex items-center justify-between border-b border-[var(--border-neutral)] pb-3">
+      <section aria-labelledby="feed-heading" className="card space-y-5">
+        {/* Header (No inner divider border) */}
+        <div className="flex items-center justify-between pb-3">
           <div className="flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-[var(--accent-primary)]" />
-            <h3 id="feed-heading" className="text-base font-semibold text-[var(--text-primary)]">
+            <Sparkles className="h-4 w-4 text-white" />
+            <h3 id="feed-heading" className="text-base font-semibold text-white drop-shadow-sm">
               Sensory Intelligence Feed
             </h3>
           </div>
@@ -1649,16 +1636,16 @@ export function UnifiedCoPilot({
                   speakText(activeAnalysisResult.spokenText);
                 }
               }}
-              className="btn-secondary text-xs flex items-center gap-1.5 py-1 px-2.5"
+              className="btn-secondary text-xs flex items-center gap-1.5 py-1.5 px-3.5 cursor-pointer text-white"
             >
               {isSpeaking ? (
                 <>
-                  <VolumeX className="h-3.5 w-3.5" />
+                  <VolumeX className="h-3.5 w-3.5 text-white" />
                   <span>Silence</span>
                 </>
               ) : (
                 <>
-                  <Volume2 className="h-3.5 w-3.5" />
+                  <Volume2 className="h-3.5 w-3.5 text-white" />
                   <span>Read Aloud</span>
                 </>
               )}
@@ -1666,14 +1653,14 @@ export function UnifiedCoPilot({
           )}
         </div>
 
-        {/* Empty State */}
+        {/* Empty State (No Inner Border) */}
         {feedItems.length === 0 && (
-          <div className="py-8 text-center space-y-2 border border-dashed border-[var(--border-neutral)] rounded-[var(--radius-md)] p-4">
-            <Eye className="mx-auto h-8 w-8 text-[var(--text-secondary)] opacity-60" />
-            <p className="text-sm font-medium text-[var(--text-primary)]">
+          <div className="py-8 text-center space-y-2.5 rounded-[26px] p-6 bg-white/[0.02]">
+            <Eye className="mx-auto h-8 w-8 text-white/50 opacity-80" />
+            <p className="text-sm font-semibold text-white">
               No sensory events yet
             </p>
-            <p className="text-xs text-[var(--text-secondary)] max-w-sm mx-auto">
+            <p className="text-xs text-white/70 max-w-sm mx-auto font-normal">
               Start the walking radar to detect obstacles, capture a snapshot to examine an object, or ask any question.
             </p>
           </div>
@@ -1683,30 +1670,20 @@ export function UnifiedCoPilot({
         {feedItems.length > 0 && (
           <div
             ref={feedContainerRef}
-            className="max-h-96 overflow-y-auto space-y-3 pr-1"
+            className="max-h-96 overflow-y-auto space-y-3.5 pr-1"
             role="log"
             aria-live="polite"
           >
             {feedItems.map((item) => (
               <div
                 key={item.id}
-                className={`p-3.5 rounded-[var(--radius-sm)] border space-y-1.5 transition-colors ${
-                  item.type === 'radar'
-                    ? 'border-emerald-500/40 bg-emerald-50/40 dark:bg-emerald-950/20'
-                    : item.type === 'spatial'
-                    ? 'border-amber-500/40 bg-amber-50/30 dark:bg-amber-950/20'
-                    : item.type === 'analysis'
-                    ? 'border-[var(--accent-primary)] bg-[var(--bg-subtle)]'
-                    : item.type === 'followup'
-                    ? 'border-[var(--border-neutral)] bg-[var(--bg-surface)]'
-                    : 'border-[var(--border-neutral)] bg-[var(--bg-subtle)] text-xs text-[var(--text-secondary)]'
-                }`}
+                className="p-4 rounded-[22px] bg-white/[0.04] backdrop-blur-[6px] space-y-2.5 shadow-sm"
               >
                 {/* Header */}
-                <div className="flex items-center justify-between text-xs text-[var(--text-secondary)]">
+                <div className="flex items-center justify-between text-xs text-white/75">
                   <div className="flex items-center gap-1.5">
-                    {item.type === 'spatial' && <MapPin className="h-3.5 w-3.5 text-amber-500" />}
-                    <span className="font-semibold uppercase tracking-wider text-[var(--text-primary)]">
+                    {item.type === 'spatial' && <MapPin className="h-3.5 w-3.5 text-white/80" />}
+                    <span className="font-semibold uppercase tracking-wider text-white">
                       {item.title ||
                         (item.type === 'radar'
                           ? 'Radar Event'
@@ -1717,28 +1694,28 @@ export function UnifiedCoPilot({
                           : 'System')}
                     </span>
                   </div>
-                  <span className="font-mono text-[11px]">{item.timestamp}</span>
+                  <span className="font-mono text-[11px] text-white/50">{item.timestamp}</span>
                 </div>
 
-                {/* Proactive Takeaway highlight if present */}
+                {/* Proactive Takeaway highlight if present (Normal Monochrome Glass) */}
                 {item.proactiveInsight && (
-                  <div className="p-2 rounded bg-[var(--bg-surface)] border-l-2 border-l-[var(--accent-primary)] text-xs font-semibold text-[var(--text-primary)]">
+                  <div className="p-3 rounded-[16px] bg-white/[0.06] text-xs font-medium text-white">
                     Takeaway: {item.proactiveInsight}
                   </div>
                 )}
 
                 {/* Content */}
-                <p className="text-sm text-[var(--text-primary)] leading-relaxed">
+                <p className="text-sm text-white leading-relaxed font-normal">
                   {item.content}
                 </p>
 
                 {/* Exhaustive Detailed Breakdown if present */}
                 {item.detailedText && (
-                  <details className="pt-2 text-xs text-[var(--text-secondary)]">
-                    <summary className="cursor-pointer font-semibold hover:text-[var(--text-primary)]">
+                  <details className="pt-2 text-xs text-white/75">
+                    <summary className="cursor-pointer font-semibold hover:text-white transition-colors">
                       View Comprehensive Written Architecture
                     </summary>
-                    <div className="mt-2 p-2.5 rounded bg-[var(--bg-surface)] border border-[var(--border-neutral)] whitespace-pre-wrap font-sans text-xs text-[var(--text-primary)] leading-relaxed">
+                    <div className="mt-2 p-3.5 rounded-[16px] bg-black/30 whitespace-pre-wrap font-sans text-xs text-white/90 leading-relaxed shadow-inner">
                       {item.detailedText}
                     </div>
                   </details>
@@ -1748,8 +1725,8 @@ export function UnifiedCoPilot({
           </div>
         )}
 
-        {/* Conversational Follow-Up Input (Available anytime to interrupt and ask questions) */}
-        <form onSubmit={handleFollowupSubmit} className="pt-3 border-t border-[var(--border-neutral)] flex gap-2">
+        {/* Conversational Follow-Up Input (No Inner Border) */}
+        <form onSubmit={handleFollowupSubmit} className="pt-4 flex gap-2.5">
           <label htmlFor="copilot-followup-input" className="sr-only">
             Ask a question or speak an inquiry
           </label>
@@ -1764,31 +1741,31 @@ export function UnifiedCoPilot({
                 : "Ask about surroundings, pinned items, or media (e.g. 'Where did I put my water bottle?')"
             }
             disabled={isAnsweringFollowup}
-            className="flex-1 rounded-[var(--radius-sm)] border border-[var(--border-neutral)] bg-[var(--bg-surface)] px-3 py-2 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:ring-2 focus:ring-[var(--focus-ring)]"
+            className="flex-1 rounded-full border-0 bg-white/[0.05] px-5 py-3 text-sm text-white placeholder-white/40 focus:outline-none focus:ring-1 focus:ring-white/30 backdrop-blur-[6px] shadow-inner"
           />
           {isSpeechRecognitionSupported() && (
             <button
               type="button"
               onClick={toggleVoiceControl}
               disabled={isAnsweringFollowup}
-              className={`btn-secondary text-xs px-3 flex items-center gap-1 ${
-                isVoiceActive ? 'border-[var(--accent-primary)] text-[var(--accent-primary)]' : ''
+              className={`glass-pill text-xs px-3.5 h-11 flex items-center justify-center cursor-pointer text-white ${
+                isVoiceActive ? 'bg-white/[0.14]' : 'text-white/70'
               }`}
               aria-label={isVoiceActive ? 'Mute voice' : 'Ask question with voice'}
             >
-              {isVoiceActive ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+              {isVoiceActive ? <MicOff className="h-4 w-4 text-white" /> : <Mic className="h-4 w-4 text-white" />}
             </button>
           )}
           <button
             type="submit"
             disabled={!followupText.trim() || isAnsweringFollowup}
-            className="btn-secondary whitespace-nowrap text-xs font-semibold px-4"
+            className="btn-secondary whitespace-nowrap text-xs font-medium px-5 rounded-full cursor-pointer h-11 text-white"
           >
             {isAnsweringFollowup ? (
-              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+              <RefreshCw className="h-3.5 w-3.5 animate-spin text-white" />
             ) : (
-              <span className="flex items-center gap-1.5">
-                <Send className="h-3.5 w-3.5" />
+              <span className="flex items-center gap-1.5 text-white">
+                <Send className="h-3.5 w-3.5 text-white" />
                 <span>Ask</span>
               </span>
             )}

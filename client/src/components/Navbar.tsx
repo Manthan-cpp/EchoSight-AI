@@ -1,83 +1,59 @@
-import { Sun, Moon, Volume2, Radio } from 'lucide-react';
+import { Sun, Moon } from 'lucide-react';
 import type { WorkspaceMode } from './UnifiedCoPilot';
 
 interface NavbarProps {
   activeMode?: WorkspaceMode;
   isDark: boolean;
   setIsDark: (dark: boolean) => void;
-  onSpeakGreeting: () => void;
+  onSpeakGreeting?: () => void;
 }
 
 export function Navbar({
-  activeMode = 'standby',
   isDark,
   setIsDark,
-  onSpeakGreeting,
 }: NavbarProps) {
   return (
-    <header className="border-b border-[var(--border-neutral)] bg-[var(--bg-surface)] px-4 py-3">
-      <div className="mx-auto flex max-w-4xl flex-wrap items-center justify-between gap-3">
+    <header className="sticky top-0 z-40 px-5 py-3.5">
+      {/* Background with subtle top shading fading seamlessly at bottom */}
+      <div
+        className="absolute inset-x-0 top-0 -bottom-4 pointer-events-none -z-10"
+        style={{
+          background:
+            'linear-gradient(to bottom, rgba(0, 0, 0, 0.6) 0%, rgba(0, 0, 0, 0.25) 60%, rgba(0, 0, 0, 0) 100%)',
+          backdropFilter: 'blur(8px)',
+          WebkitBackdropFilter: 'blur(8px)',
+          maskImage:
+            'linear-gradient(to bottom, rgba(0, 0, 0, 1) 0%, rgba(0, 0, 0, 0.75) 60%, rgba(0, 0, 0, 0) 100%)',
+          WebkitMaskImage:
+            'linear-gradient(to bottom, rgba(0, 0, 0, 1) 0%, rgba(0, 0, 0, 0.75) 60%, rgba(0, 0, 0, 0) 100%)',
+        }}
+      />
+      <div className="mx-auto flex max-w-4xl items-center justify-between gap-3">
         {/* Brand with Official Logo */}
         <div className="flex items-center gap-3">
           <img
             src="/logo.png"
             alt="EchoSight Logo"
-            className="h-8 sm:h-9 w-auto object-contain"
+            className="h-8 sm:h-9 w-auto object-contain drop-shadow-md"
           />
-          <div className="hidden sm:block border-l border-[var(--border-neutral)] pl-3">
-            <p className="text-xs text-[var(--text-secondary)] font-medium">
+          <div className="hidden sm:block pl-2">
+            <p className="text-xs text-white/85 font-medium tracking-wide">
               Voice-First Spatial & Visual Co-Pilot
             </p>
-          </div>
-        </div>
-
-        {/* Unified Mode HUD Status Badge */}
-        <div className="flex items-center gap-2">
-          <div
-            className={`px-3 py-1 text-xs font-semibold rounded-[var(--radius-sm)] border flex items-center gap-2 transition-colors ${
-              activeMode === 'radar'
-                ? 'bg-[var(--status-listening-bg)] text-[var(--status-listening-text)] border-[var(--status-listening-border)]'
-                : activeMode === 'inspection'
-                ? 'bg-[var(--bg-subtle)] text-[var(--accent-primary)] border-[var(--accent-primary)]'
-                : 'bg-[var(--bg-subtle)] text-[var(--text-secondary)] border-[var(--border-neutral)]'
-            }`}
-            role="status"
-          >
-            <Radio
-              className={`h-3.5 w-3.5 ${
-                activeMode === 'radar' ? 'animate-pulse text-emerald-500' : ''
-              }`}
-            />
-            <span>
-              {activeMode === 'radar'
-                ? 'Walking Radar'
-                : activeMode === 'inspection'
-                ? 'Snapshot Inspection'
-                : 'Unified Workspace'}
-            </span>
           </div>
         </div>
 
         {/* Utility Controls */}
         <div className="flex items-center gap-2">
           <button
-            onClick={onSpeakGreeting}
-            className="flex h-10 items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--border-neutral)] bg-[var(--bg-surface)] px-3 text-xs font-medium text-[var(--text-primary)] hover:bg-[var(--bg-subtle)]"
-            title="Play opening spoken greeting"
-            aria-label="Speak welcome greeting aloud"
-          >
-            <Volume2 className="h-4 w-4" aria-hidden="true" />
-            <span>Spoken Intro</span>
-          </button>
-          <button
             onClick={() => setIsDark(!isDark)}
-            className="flex h-10 w-10 items-center justify-center rounded-[var(--radius-sm)] border border-[var(--border-neutral)] bg-[var(--bg-surface)] text-[var(--text-primary)] hover:bg-[var(--bg-subtle)]"
+            className="glass-pill flex h-10 w-10 items-center justify-center text-white cursor-pointer"
             aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
           >
             {isDark ? (
-              <Sun className="h-4 w-4" aria-hidden="true" />
+              <Sun className="h-4 w-4 text-white" aria-hidden="true" />
             ) : (
-              <Moon className="h-4 w-4" aria-hidden="true" />
+              <Moon className="h-4 w-4 text-white" aria-hidden="true" />
             )}
           </button>
         </div>
