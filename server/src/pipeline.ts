@@ -546,13 +546,13 @@ GROUND TRUTH & DIRECTIONAL NAVIGATION RULES:
      - If an open doorway or corridor is directly ahead, guide them: e.g. "Doorway directly ahead. Step through carefully into the room."
      - Always warn of low or side hazards: e.g. "Watch out for water jugs on your right", "A large bed sits to your left".
 2. WALKING CONFIRMATION:
-   - If the floor and path straight ahead is completely unobstructed: "Open hallway ahead, path is clear to walk."
+   - If the floor and path straight ahead is completely unobstructed: "You can move forward steadily."
    - Always give relative spatial positioning ("straight ahead", "to your left", "to your right").
    - NEVER say "path is clear" if the camera is facing a wall, closed door, bed, or obstacle!
 3. ONLY REPORT REAL LIVING PEOPLE:
    - ONLY report a person if an actual living human being is clearly standing in front. Never guess or mistake doors, curtains, jackets, shadows, or furniture for a person.
 4. SPOKEN STYLE & CADENCE:
-   - Deliver 1 to 2 short, vigilant, spoken sentences (maximum 15 words) with calm authority, like a vigilant sighted companion walking right beside them.
+   - Deliver 1 to 2 short, vigilant, spoken sentences (maximum 18 words) with calm authority, like a vigilant sighted companion walking right beside them.
    - If the view has genuinely not changed from prior observation ("${priorContext || ''}"), give a brief update like "Path still clear ahead" or "Wall still ahead".
 
 State current walking safety:`;
@@ -675,21 +675,38 @@ STRICT VISUAL GROUND TRUTH & DIRECTIONAL NAVIGATION RULES:
 function normalizeWalkingSafety(rawText: string): WalkingSafetyAssessment {
   const text = rawText.trim().replace(/^```(?:json)?|```$/gi, '').trim();
   const lower = text.toLowerCase();
-  const direction = /\bleft\b/.test(lower) && !/\bright\b/.test(lower)
-    ? 'left'
-    : /\bright\b/.test(lower) && !/\bleft\b/.test(lower)
-      ? 'right'
-      : 'none';
+  // The first movement action is authoritative. A natural guide sentence may
+  // mention both sides ("Move right; wall on your left"), so counting every
+  // occurrence of "left" and "right" would incorrectly erase the action.
+  const directionMatch = lower.match(
+    /\b(?:move|veer|shift|go|walk|head|keep|continue)\b[^.!?]{0,32}\b(left|right)\b/
+  );
+  const direction: 'left' | 'right' | 'none' = directionMatch
+    ? directionMatch[1] as 'left' | 'right'
+    : 'none';
+
+  // A useful avoidance instruction can mention the obstacle it is routing
+  // around ("Move right; pass the chair"). Do not let that object noun turn
+  // an explicit lateral action back into a stop state.
+  const startsWithStop = /^(?:stop|halt|wait|hold)\b/.test(lower) ||
+    /\b(?:do not move|don't move|stay where you are)\b/.test(lower);
+  const hasMovementAction = /\b(?:move|veer|shift|pass|keep|go|walk|head|continue)\b/.test(lower);
+  const isForwardAction = /^(?:you can|continue|proceed|walk|move)\b[^.!?]{0,32}\bforward\b/.test(lower);
+  const startsWithSlow = /^(?:slow down|move carefully|proceed carefully|take it slow)\b/.test(lower);
 
   let status: WalkingSafetyStatus = 'unknown';
-  if (/\b(stop|blocked|wall|closed door|barrier|desk|bed|chair|obstacle)\b/.test(lower)) {
+  if (startsWithStop || (direction === 'none' && /\bstop\b/.test(lower))) {
     status = 'stop';
+  } else if (startsWithSlow) {
+    status = 'slow';
+  } else if (direction !== 'none' && hasMovementAction) {
+    status = direction;
   } else if (/\b(slow|cautious|narrow|congested|doorway|opening|careful)\b/.test(lower)) {
     status = 'slow';
-  } else if (direction === 'left') {
-    status = 'left';
-  } else if (direction === 'right') {
-    status = 'right';
+  } else if (isForwardAction) {
+    status = 'clear';
+  } else if (/\b(blocked|wall|closed door|barrier|desk|bed|chair|obstacle)\b/.test(lower)) {
+    status = 'stop';
   } else if (/\b(clear|safe|open|unobstructed)\b/.test(lower)) {
     status = 'clear';
   }
@@ -779,7 +796,7 @@ async function requestWalkingSafetyText(
             ],
             generationConfig: {
               temperature: 0,
-              maxOutputTokens: 24,
+              maxOutputTokens: 32,
             },
           }),
         }
@@ -840,18 +857,21 @@ export async function instantPathCheck(
     throw new Error(`Unsupported walking frame format: ${mimeType}.`);
   }
 
-  const prompt = `You are EchoSight's urgent walking-safety camera.
-Inspect only the immediate path directly ahead and nearby side hazards.
-Respond with ONE short spoken instruction, 4 to 12 words.
+  const prompt = `You are EchoSight's real-time walking companion for a blind person.
+Analyze the image as a forward-facing walking view. The user needs an ACTION first, not merely an object label.
+Return one or two natural spoken sentences, maximum 22 words, with no explanation.
+Start the first sentence with the action so it is immediately useful.
 
-RULES:
-1. If the immediate floor is genuinely clear: "Path clear ahead."
-2. If anything blocks the next step: "Stop. [object] directly ahead."
-3. If a safe side route is clearly visible: "Move slightly left/right; path open."
-4. If the area is narrow, crowded, or a doorway needs care: "Slow down; narrow passage." or "Doorway ahead; move carefully."
-5. If visibility or certainty is insufficient: "Stop. Path not verified."
-6. Only report a person when an actual living human is clearly visible. Never guess from furniture, shadows, doors, or clothing.
-7. Never say "path clear" when a wall, closed door, bed, desk, chair, or barrier is ahead.`;
+GUIDANCE RULES:
+1. Check the floor-level corridor from the camera toward the farthest visible opening.
+2. If the corridor is clear: explicitly say "You can move forward steadily" or "Continue forward; the passage is clear." Do not say only "Path clear ahead."
+3. If an obstacle blocks the center but a continuous, wide side corridor is visible, guide around it: "Move right around the chair, then continue." or "Keep left; pass the obstacle."
+4. Compare both sides and choose the safer visible side. Use natural variation such as "move right," "keep right," "veer left," or "continue left." Use "slightly" only when a small correction is actually needed; never use it by default.
+5. If the passage is tight, cluttered, or visibility is reduced: start with "Slow down" or "Move carefully" and say which side is safer.
+6. Say "Stop. [object] directly ahead." ONLY when no safe side corridor is visible, the obstacle fills the usable width, there is a wall/closed door/drop-off, or the image is too uncertain to choose safely.
+7. Never say Stop solely because a chair, bed, table, or other furniture is present when a safe side route is clearly visible.
+8. After the action, add one short left/right observation only when clearly visible and useful, such as "Bed on your left; open passage on your right." Do not invent details.
+9. Never say "path clear" while an obstacle blocks the forward corridor. Report only what is visibly present; never invent a person or hazard.`;
 
   const text = await requestWalkingSafetyText(imageBuffer, mimeType, prompt);
   const safety = normalizeWalkingSafety(text);

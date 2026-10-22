@@ -139,6 +139,9 @@ export function UnifiedCoPilot({
   const safetyFailureStreakRef = useRef<number>(0);
   const nextSafetyAttemptAtRef = useRef<number>(0);
   const lastContextRequestAtRef = useRef<number>(0);
+  const radarFrameSequenceRef = useRef<number>(0);
+  const contextRequestSequenceRef = useRef<number>(0);
+  const contextRequestInFlightRef = useRef<boolean>(false);
 
   const selectedFileRef = useRef<File | null>(null);
   const fileBase64Ref = useRef<string | null>(null);
@@ -303,6 +306,9 @@ export function UnifiedCoPilot({
     safetyFailureStreakRef.current = 0;
     nextSafetyAttemptAtRef.current = 0;
     lastContextRequestAtRef.current = 0;
+    radarFrameSequenceRef.current = 0;
+    contextRequestSequenceRef.current += 1;
+    contextRequestInFlightRef.current = false;
     const success = await startCamera(nextFacing);
     if (success) {
       const label = nextFacing === 'environment' ? 'rear back camera' : 'front selfie camera';
@@ -366,6 +372,9 @@ export function UnifiedCoPilot({
     safetyFailureStreakRef.current = 0;
     nextSafetyAttemptAtRef.current = 0;
     lastContextRequestAtRef.current = 0;
+    radarFrameSequenceRef.current = 0;
+    contextRequestSequenceRef.current += 1;
+    contextRequestInFlightRef.current = false;
 
     const [cameraStarted, serverCapabilities] = await Promise.all([
       startCamera(),
@@ -374,7 +383,12 @@ export function UnifiedCoPilot({
     if (!cameraStarted) return;
 
     cadenceSecondsRef.current = serverCapabilities?.radarCadenceSeconds || 5;
-    contextIntervalRef.current = cadenceSecondsRef.current <= 2.5 ? 12_000 : 30_000;
+    const configuredKeyCount = serverCapabilities?.configuredGeminiKeys || 1;
+    contextIntervalRef.current = configuredKeyCount >= 3
+      ? 10_000
+      : configuredKeyCount === 2
+        ? 15_000
+        : 30_000;
 
     setMode('radar');
     setIsRadarScanning(true);
@@ -469,6 +483,8 @@ export function UnifiedCoPilot({
         return;
       }
 
+      const frameSequence = ++radarFrameSequenceRef.current;
+
       const result = await callTool('check_walking_path', {
         image_base64: frameBase64,
         mime_type: 'image/jpeg',
@@ -504,8 +520,13 @@ export function UnifiedCoPilot({
         const safetyStatus = result.safety?.status || 'unknown';
         const now = Date.now();
         const statusChanged = lastSafetyStatusRef.current !== safetyStatus;
-        const isUrgent = ['stop', 'left', 'right', 'slow', 'caution', 'unknown'].includes(safetyStatus);
-        const repeatAfterMs = isUrgent ? 1800 : 6000;
+        // Natural guidance is longer than a collision warning. Give speech
+        // time to finish instead of cancelling it on every 2.5s radar cycle.
+        const repeatAfterMs = safetyStatus === 'stop' || safetyStatus === 'unknown'
+          ? 1800
+          : safetyStatus === 'clear'
+            ? 5000
+            : 3200;
         const shouldSpeak = statusChanged || now - lastSafetySpeechAtRef.current >= repeatAfterMs;
 
         addFeedItem({
@@ -526,17 +547,28 @@ export function UnifiedCoPilot({
       // urgent safety result. It is intentionally less frequent to preserve quota.
       if (
         !result.error &&
+        result.safety?.status !== 'stop' &&
+        result.safety?.status !== 'unknown' &&
+        !contextRequestInFlightRef.current &&
         Date.now() - lastContextRequestAtRef.current >= contextIntervalRef.current
       ) {
         lastContextRequestAtRef.current = Date.now();
+        const contextFrameSequence = frameSequence;
+        const contextRequestSequence = ++contextRequestSequenceRef.current;
+        contextRequestInFlightRef.current = true;
         void callTool('describe_surroundings', {
           image_base64: frameBase64,
           mime_type: 'image/jpeg',
-          prior_context: priorContextRef.current || undefined,
+          // Do not feed the previous safety sentence back into this request;
+          // it can anchor Gemini to a bottle/chair that is no longer visible.
         }, { timeoutMs: 7000 }).then((contextResult) => {
+          const isFreshContext =
+            contextRequestSequence === contextRequestSequenceRef.current &&
+            contextFrameSequence === radarFrameSequenceRef.current;
           if (
             !isRadarScanningRef.current ||
             sessionId !== sessionIdRef.current ||
+            !isFreshContext ||
             contextResult.error ||
             !contextResult.spokenText
           ) {
@@ -552,10 +584,15 @@ export function UnifiedCoPilot({
 
           const currentSafety = latestSafetyRef.current?.status;
           if (
-            currentSafety === 'clear' &&
-            Date.now() - lastSafetySpeechAtRef.current > 1200
+            currentSafety !== 'stop' &&
+            currentSafety !== 'unknown' &&
+            Date.now() - lastSafetySpeechAtRef.current > 2800
           ) {
             speakText(contextResult.spokenText);
+          }
+        }).finally(() => {
+          if (contextRequestSequence === contextRequestSequenceRef.current) {
+            contextRequestInFlightRef.current = false;
           }
         });
       }
@@ -1587,7 +1624,7 @@ export function UnifiedCoPilot({
         )}
 
         {/* Dynamic Media Viewport (No Inner Border) */}
-        <div className="relative aspect-video max-h-76 w-full overflow-hidden rounded-[26px] bg-black/25 backdrop-blur-[6px] flex items-center justify-center shadow-inner">
+        <div className="relative aspect-video w-full overflow-hidden rounded-[26px] bg-black/25 backdrop-blur-[6px] flex items-center justify-center shadow-inner">
           {/* 1. Live Video Viewfinder */}
           <video
             ref={videoRef}
