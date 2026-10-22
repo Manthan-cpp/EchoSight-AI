@@ -6,7 +6,7 @@
 
 [![Hackathon Track: Alexa+](https://img.shields.io/badge/Track-Alexa%2B%20Hackathon-FF9900?style=for-the-badge&logo=amazon-alexa&logoColor=white)](https://developer.amazon.com/en-US/alexa)
 [![Model Context Protocol](https://img.shields.io/badge/MCP-Streamable%20HTTP%20%2F%20SSE-6B46C1?style=for-the-badge&logo=anthropic&logoColor=white)](https://modelcontextprotocol.io/)
-[![Google Gemini Flash](https://img.shields.io/badge/Vision%20Engine-Gemini%20Flash%20Multimodal-4285F4?style=for-the-badge&logo=google&logoColor=white)](https://ai.google.dev/)
+[![Vision Engine](https://img.shields.io/badge/Vision%20Engine-Multimodal%20Spatial%20AI-00A8E8?style=for-the-badge)](#-core-capabilities--feature-deep-dive)
 [![React 19](https://img.shields.io/badge/React-19.3%20Vite%208-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7%20Strict-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Hands-Free](https://img.shields.io/badge/Interface-100%25%20Voice%20Operated-success?style=for-the-badge&logo=soundcharts&logoColor=white)](#-100-hands-free-eyes-free-experience)
@@ -196,12 +196,12 @@ flowchart TD
     subgraph MCPServer ["MCP Server (Node.js + Express + TypeScript)"]
         SSE["Streamable HTTP / SSE Transport (/sse)"]
         Stdio["Stdio Transport (--stdio)"]
-        Pool["Multi-Key Gemini Project Pool (3 Keys, 15 RPM)"]
+        Pool["Multi-Key Rotation Pool (Rolling Rate Limiting)"]
         Deadline["Hard Timeout Deadlines (4s / 12s)"]
     end
 
     subgraph VisionEngine ["Multimodal Reasoning Engine"]
-        G35["Gemini Flash Multimodal Vision"]
+        G35["Multimodal Vision Intelligence"]
         Normalizer["Safety Normalizer & Ground Truth Gate"]
     end
 
@@ -251,9 +251,9 @@ flowchart TD
 * **Transport Modes:** Streamable HTTP / Server-Sent Events (SSE) on `/sse` and Stdio transport via `--stdio`
 
 ### Vision & AI Models
-* **Primary Vision Engine:** Google Gemini Flash Multimodal (`@google/genai`)
-* **Key Pool Management:** Server-side 3-key project pool with rolling 60-second window request tracking and automatic rotation
-* **Audio Intelligence Backup:** Groq Whisper Large v3 Turbo
+* **Primary Vision Engine:** High-speed multimodal spatial vision model
+* **Key Pool Management:** Server-side multi-key project pool with rolling 60-second window request tracking and automatic rotation
+* **Audio Intelligence Backup:** High-speed speech-to-text fallback
 
 ---
 
@@ -262,7 +262,7 @@ flowchart TD
 ### Prerequisites
 * **Node.js:** v18.0.0 or higher (v22+ recommended)
 * **npm:** v9.0.0 or higher
-* **Google Gemini API Key:** From [Google AI Studio](https://aistudio.google.com/)
+* **Vision Intelligence API Credentials**
 
 ### 1. Clone the Repository
 ```bash
@@ -271,22 +271,7 @@ cd EchoSight-AI
 ```
 
 ### 2. Configure Environment Variables
-Create a `.env` file in the `server/` directory:
-
-```ini
-PORT=3001
-GEMINI_MODEL=gemini-3.5-flash-lite
-
-# Primary Gemini API Key
-GEMINI_API_KEY=your_gemini_api_key_here
-
-# Optional: Add secondary project keys to unlock 2.5s radar cadence
-GEMINI_API_KEY1=your_second_project_key
-GEMINI_API_KEY2=your_third_project_key
-
-# Optional: Groq API Key for Whisper fallback
-GROQ_API_KEY=your_groq_api_key_here
-```
+Set up your server configuration in the `server/` directory with your preferred server port and vision credentials.
 
 ### 3. Install Dependencies & Build
 
@@ -336,7 +321,7 @@ npm run inspector
 
 * **Amazon Alexa+ Team:** For inspiring the voice-first paradigm and agentic spatial intelligence.
 * **Model Context Protocol (MCP) Community:** For establishing open standards for LLM-tool connectivity.
-* **Google DeepMind & Gemini API Team:** For high-speed multimodal vision models making real-time accessibility possible.
+* **Multimodal Vision & AI Researchers:** For high-speed sensory vision models making real-time accessibility possible.
 * **Open Source Accessibility Advocates:** Dedicated to building tools that ensure technology leaves no one behind.
 
 ---
