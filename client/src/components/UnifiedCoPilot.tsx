@@ -472,28 +472,31 @@ export function UnifiedCoPilot({
       const result = await callTool('check_walking_path', {
         image_base64: frameBase64,
         mime_type: 'image/jpeg',
-      }, { timeoutMs: 5500 });
+      }, { timeoutMs: 13000 });
 
       if (!isRadarScanningRef.current || sessionId !== sessionIdRef.current) return;
 
       prevFrameRef.current = frameBase64;
-      latestSafetyRef.current = result.safety || {
-        status: 'unknown',
-        direction: 'none',
-        confidence: 'low',
-      };
-      latestSafetyAtRef.current = Date.now();
+      // Keep the last verified state during a short transport hiccup. Replacing
+      // it immediately with "unknown" caused a single slow key to erase good
+      // guidance and trigger repeated false stop messages.
+      if (result.safety) {
+        latestSafetyRef.current = result.safety;
+        latestSafetyAtRef.current = Date.now();
+      }
       if (!result.error) {
         priorContextRef.current = result.spokenText;
       }
 
       if (result.error) {
         safetyFailureStreakRef.current += 1;
-        const backoffMs = Math.min(30_000, 5_000 * 2 ** Math.min(safetyFailureStreakRef.current - 1, 2));
+        const backoffMs = Math.min(12_000, 1_500 * 2 ** Math.min(safetyFailureStreakRef.current - 1, 3));
         nextSafetyAttemptAtRef.current = Date.now() + backoffMs;
-        if (Date.now() - lastRadarErrorAtRef.current > 15_000) {
+        const safetyIsStale =
+          !latestSafetyAtRef.current || Date.now() - latestSafetyAtRef.current > 10_000;
+        if (safetyIsStale && Date.now() - lastRadarErrorAtRef.current > 10_000) {
           lastRadarErrorAtRef.current = Date.now();
-          speakText('I cannot verify the walking path right now. Stop and wait.');
+          speakText('Please pause briefly while I refresh the walking path.');
         }
       } else if (result.spokenText) {
         safetyFailureStreakRef.current = 0;
@@ -501,7 +504,7 @@ export function UnifiedCoPilot({
         const safetyStatus = result.safety?.status || 'unknown';
         const now = Date.now();
         const statusChanged = lastSafetyStatusRef.current !== safetyStatus;
-        const isUrgent = ['stop', 'left', 'right', 'slow', 'caution'].includes(safetyStatus);
+        const isUrgent = ['stop', 'left', 'right', 'slow', 'caution', 'unknown'].includes(safetyStatus);
         const repeatAfterMs = isUrgent ? 1800 : 6000;
         const shouldSpeak = statusChanged || now - lastSafetySpeechAtRef.current >= repeatAfterMs;
 
@@ -561,11 +564,13 @@ export function UnifiedCoPilot({
     } catch (err: any) {
       console.warn('[UnifiedCoPilot] Radar cadence error:', err);
       safetyFailureStreakRef.current += 1;
-      const backoffMs = Math.min(30_000, 5_000 * 2 ** Math.min(safetyFailureStreakRef.current - 1, 2));
+      const backoffMs = Math.min(12_000, 1_500 * 2 ** Math.min(safetyFailureStreakRef.current - 1, 3));
       nextSafetyAttemptAtRef.current = Date.now() + backoffMs;
-      if (Date.now() - lastRadarErrorAtRef.current > 15_000) {
+      const safetyIsStale =
+        !latestSafetyAtRef.current || Date.now() - latestSafetyAtRef.current > 10_000;
+      if (safetyIsStale && Date.now() - lastRadarErrorAtRef.current > 10_000) {
         lastRadarErrorAtRef.current = Date.now();
-        speakText('Walking path verification failed. Stop and wait.');
+        speakText('Please pause briefly while I refresh the walking path.');
       }
       scheduleNextCycle();
     } finally {
@@ -1108,10 +1113,10 @@ export function UnifiedCoPilot({
     const result = await callTool('check_walking_path', {
       image_base64: frameBase64,
       mime_type: 'image/jpeg',
-    }, { timeoutMs: 5500 });
+    }, { timeoutMs: 13000 });
 
     if (result.error) {
-      speakText('I cannot verify the path right now. Stop and wait.');
+      speakText('Please pause briefly while I refresh the walking path.');
       return;
     }
 

@@ -45,10 +45,14 @@ export const HARD_LIMITS = {
 
 interface GeminiClientSlot {
   keyName: string;
+  apiKey: string;
   client: GoogleGenAI;
   requestTimes: number[];
   blockedUntil: number;
   failureCount: number;
+  latencyEmaMs: number | null;
+  inFlight: number;
+  cooldownReason: 'quota' | 'transient' | null;
 }
 
 let geminiClientSlots: GeminiClientSlot[] | null = null;
@@ -75,10 +79,20 @@ function getGeminiClientSlots(): GeminiClientSlot[] {
       seenKeys.add(value);
       return {
         keyName,
-        client: new GoogleGenAI({ apiKey: value }),
+        apiKey: value,
+        // The pipeline owns rotation and retry decisions. Disable the SDK's
+        // hidden retry loop so one request cannot silently consume the entire
+        // walking-safety latency budget.
+        client: new GoogleGenAI({
+          apiKey: value,
+          httpOptions: { retryOptions: { attempts: 1 } },
+        }),
         requestTimes: [],
         blockedUntil: 0,
         failureCount: 0,
+        latencyEmaMs: null,
+        inFlight: 0,
+        cooldownReason: null,
       };
     });
 
@@ -90,38 +104,127 @@ function getGeminiClientSlots(): GeminiClientSlot[] {
   return geminiClientSlots;
 }
 
-function acquireGeminiClient(): GeminiClientSlot {
+function acquireGeminiClient(allowTransientFallback = false): GeminiClientSlot {
   const slots = getGeminiClientSlots();
   const now = Date.now();
   const perKeyRpm = Math.max(1, Number.parseInt(process.env.GEMINI_RPM_PER_KEY || '15', 10));
 
-  for (let offset = 0; offset < slots.length; offset += 1) {
-    const index = (nextGeminiSlot + offset) % slots.length;
+  const candidateIndexes = Array.from({ length: slots.length }, (_, offset) =>
+    (nextGeminiSlot + offset) % slots.length
+  );
+
+  for (const index of candidateIndexes) {
     const slot = slots[index];
     slot.requestTimes = slot.requestTimes.filter((timestamp) => now - timestamp < 60_000);
     if (slot.blockedUntil > now) continue;
+    if (slot.inFlight > 0) continue;
     if (slot.requestTimes.length < perKeyRpm) {
       slot.requestTimes.push(now);
+      slot.inFlight += 1;
       nextGeminiSlot = (index + 1) % slots.length;
       return slot;
     }
   }
 
-  throw new Error(`All configured Gemini projects are at their ${perKeyRpm} RPM request limit.`);
+  if (allowTransientFallback) {
+    const fallback = slots
+      .filter((slot) =>
+        slot.cooldownReason !== 'quota' &&
+        slot.inFlight === 0 &&
+        slot.requestTimes.filter((timestamp) => now - timestamp < 60_000).length < perKeyRpm
+      )
+      .sort((left, right) => left.blockedUntil - right.blockedUntil)[0];
+
+    if (fallback) {
+      // If every project is temporarily slow or overloaded, do not turn the
+      // circuit breaker into a permanent outage. Probe the least-recently
+      // failed transient key once more; quota blocks are never bypassed.
+      fallback.blockedUntil = 0;
+      fallback.cooldownReason = null;
+      fallback.requestTimes.push(now);
+      fallback.inFlight += 1;
+      nextGeminiSlot = (slots.indexOf(fallback) + 1) % slots.length;
+      return fallback;
+    }
+  }
+
+  throw new Error(
+    `No configured Gemini project key is currently available (busy, cooling down, or at the ${perKeyRpm} RPM limit).`
+  );
+}
+
+function releaseGeminiClient(slot: GeminiClientSlot): void {
+  slot.inFlight = Math.max(0, slot.inFlight - 1);
 }
 
 function isQuotaOrTransientError(error: any): boolean {
-  const message = String(error?.message || '');
+  const message = String(error?.message || '').toLowerCase();
+  const status = Number(error?.status ?? error?.code ?? error?.response?.status);
   return (
-    error?.status === 429 ||
-    error?.status === 503 ||
+    [408, 429, 500, 502, 503, 504].includes(status) ||
+    message.includes('408') ||
     message.includes('429') ||
+    message.includes('500') ||
+    message.includes('502') ||
     message.includes('503') ||
+    message.includes('504') ||
     message.includes('quota') ||
-    message.includes('RESOURCE_EXHAUSTED') ||
+    message.includes('resource_exhausted') ||
     message.includes('high demand') ||
-    message.includes('timed out')
+    message.includes('timed out') ||
+    message.includes('timeout') ||
+    message.includes('etimedout') ||
+    message.includes('fetch failed') ||
+    message.includes('connection reset')
   );
+}
+
+function getGeminiErrorStatus(error: any): number {
+  return Number(error?.status ?? error?.code ?? error?.response?.status) || 0;
+}
+
+function getGeminiCooldownMs(error: any, failureCount: number): number {
+  const message = String(error?.message || '').toLowerCase();
+  const status = getGeminiErrorStatus(error);
+
+  if (status === 429 || message.includes('quota') || message.includes('resource_exhausted')) {
+    // A quota response is generally a project-level limit. Do not hammer the
+    // same project again on the next radar cycle.
+    return 60_000;
+  }
+
+  if (status === 503 || message.includes('high demand')) {
+    return Math.min(30_000, 8_000 * 2 ** Math.min(failureCount - 1, 2));
+  }
+
+  if (
+    message.includes('timed out') ||
+    message.includes('timeout') ||
+    message.includes('etimedout') ||
+    message.includes('fetch failed') ||
+    message.includes('connection reset')
+  ) {
+    // A timeout means the project may be valid but too slow for a live radar
+    // cycle. Give the other keys room to serve the user before retrying it.
+    return Math.min(15_000, 8_000 * 2 ** Math.min(failureCount - 1, 1));
+  }
+
+  return Math.min(15_000, 3_000 * 2 ** Math.min(failureCount - 1, 2));
+}
+
+function recordGeminiFailure(slot: GeminiClientSlot, error: any): void {
+  if (!isQuotaOrTransientError(error)) return;
+
+  slot.failureCount += 1;
+  const cooldownMs = getGeminiCooldownMs(error, slot.failureCount);
+  slot.blockedUntil = Date.now() + cooldownMs;
+  const message = String(error?.message || '').toLowerCase();
+  const status = getGeminiErrorStatus(error);
+  slot.cooldownReason =
+    status === 429 || message.includes('quota') || message.includes('resource_exhausted')
+      ? 'quota'
+      : 'transient';
+  console.warn(`[EchoSight] ${slot.keyName} failed; cooling it down for ${cooldownMs}ms: ${error.message}`);
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
@@ -168,32 +271,45 @@ async function generateWithRetry(
   for (let attempt = 0; attempt < Math.max(1, maxAttempts); attempt += 1) {
     const slot = acquireGeminiClient();
     const model = modelsToTry[Math.min(attempt, modelsToTry.length - 1)];
+    const startedAt = Date.now();
+    let request: Promise<any> | null = null;
 
     try {
       const params = { ...baseParams, model };
+      request = slot.client.models.generateContent(params);
       const response = await withTimeout(
-        slot.client.models.generateContent(params),
+        request,
         timeoutMs
       );
+      slot.latencyEmaMs = slot.latencyEmaMs === null
+        ? Date.now() - startedAt
+        : slot.latencyEmaMs * 0.7 + (Date.now() - startedAt) * 0.3;
       slot.failureCount = 0;
       slot.blockedUntil = 0;
+      slot.cooldownReason = null;
       return response;
     } catch (err: any) {
       lastError = err;
       const quotaOrTransient = isQuotaOrTransientError(err);
-
-      if (quotaOrTransient) {
-        slot.failureCount += 1;
-        const cooldownMs = Math.min(30_000, 2_000 * 2 ** Math.min(slot.failureCount - 1, 4));
-        slot.blockedUntil = Date.now() + cooldownMs;
-        console.warn(`[EchoSight] ${slot.keyName} failed; cooling it down for ${cooldownMs}ms: ${err.message}`);
-      }
+      recordGeminiFailure(slot, err);
 
       if (!quotaOrTransient || attempt + 1 >= maxAttempts) {
         throw err;
       }
 
       console.warn(`[EchoSight] ${slot.keyName} unavailable; rotating Gemini project key.`);
+    } finally {
+      if (request) {
+        // Keep the slot reserved until an SDK request that outlives our caller
+        // timeout actually settles; otherwise a slow request can overlap the
+        // next safety request on the same project.
+        request.then(
+          () => releaseGeminiClient(slot),
+          () => releaseGeminiClient(slot)
+        );
+      } else {
+        releaseGeminiClient(slot);
+      }
     }
   }
 
@@ -590,6 +706,125 @@ function normalizeWalkingSafety(rawText: string): WalkingSafetyAssessment {
   };
 }
 
+function extractGeminiText(payload: any): string {
+  return (payload?.candidates?.[0]?.content?.parts || [])
+    .map((part: any) => (typeof part?.text === 'string' ? part.text : ''))
+    .join(' ')
+    .trim();
+}
+
+function getWalkingRequestTimeouts(): { attemptMs: number; totalMs: number } {
+  const attemptMs = Math.max(
+    2_500,
+    Number.parseInt(process.env.GEMINI_WALKING_ATTEMPT_TIMEOUT_MS || '4200', 10)
+  );
+  const totalMs = Math.max(
+    attemptMs,
+    Number.parseInt(process.env.GEMINI_WALKING_TOTAL_TIMEOUT_MS || '11500', 10)
+  );
+  return { attemptMs, totalMs };
+}
+
+/**
+ * Dedicated live-radar request path.
+ *
+ * The general SDK pipeline is intentionally rich and can tolerate a longer
+ * request. Walking safety cannot: each attempt is cancellable, only one SDK
+ * request is made per attempt, and a slow key is rotated out within the same
+ * total deadline instead of poisoning every following radar cycle.
+ */
+async function requestWalkingSafetyText(
+  imageBuffer: Buffer,
+  mimeType: string,
+  prompt: string
+): Promise<string> {
+  const slots = getGeminiClientSlots();
+  const models = Array.from(new Set(CANDIDATE_MODELS));
+  const { attemptMs, totalMs } = getWalkingRequestTimeouts();
+  const deadline = Date.now() + totalMs;
+  const maxAttempts = Math.min(slots.length, 3);
+  let modelIndex = 0;
+  let lastError: any = null;
+
+  for (let attempt = 0; attempt < maxAttempts && Date.now() < deadline; attempt += 1) {
+    const slot = acquireGeminiClient(true);
+    const remainingMs = deadline - Date.now();
+    const timeoutMs = Math.min(attemptMs, remainingMs);
+    const model = models[Math.min(modelIndex, models.length - 1)];
+    const startedAt = Date.now();
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model.replace(/^models\//, ''))}:generateContent?key=${encodeURIComponent(slot.apiKey)}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({
+            contents: [
+              {
+                role: 'user',
+                parts: [
+                  { text: prompt },
+                  {
+                    inlineData: {
+                      data: imageBuffer.toString('base64'),
+                      mimeType,
+                    },
+                  },
+                ],
+              },
+            ],
+            generationConfig: {
+              temperature: 0,
+              maxOutputTokens: 24,
+            },
+          }),
+        }
+      );
+
+      const payload: any = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const error: any = new Error(
+          payload?.error?.message || `Gemini walking request failed with HTTP ${response.status}.`
+        );
+        error.status = response.status;
+        throw error;
+      }
+
+      const text = extractGeminiText(payload);
+      if (!text) {
+        throw new Error('Gemini returned no walking-safety instruction.');
+      }
+
+      slot.failureCount = 0;
+      slot.blockedUntil = 0;
+      slot.cooldownReason = null;
+      slot.latencyEmaMs = slot.latencyEmaMs === null
+        ? Date.now() - startedAt
+        : slot.latencyEmaMs * 0.7 + (Date.now() - startedAt) * 0.3;
+      return text;
+    } catch (error: any) {
+      lastError = error?.name === 'AbortError'
+        ? new Error(`Gemini walking request timed out after ${timeoutMs}ms.`)
+        : error;
+      recordGeminiFailure(slot, lastError);
+      const status = getGeminiErrorStatus(lastError);
+      if (status === 400 || status === 404) {
+        modelIndex = Math.min(modelIndex + 1, models.length - 1);
+      }
+      if (Date.now() >= deadline) break;
+    } finally {
+      clearTimeout(timeoutId);
+      releaseGeminiClient(slot);
+    }
+  }
+
+  throw lastError || new Error('No Gemini project key was available for walking safety.');
+}
+
 /**
  * Low-latency walking path verification.
  * Missing or ambiguous output never becomes "path clear".
@@ -618,29 +853,7 @@ RULES:
 6. Only report a person when an actual living human is clearly visible. Never guess from furniture, shadows, doors, or clothing.
 7. Never say "path clear" when a wall, closed door, bed, desk, chair, or barrier is ahead.`;
 
-  const response = await generateWithRetry({
-    model: getModelName(),
-    contents: [
-      {
-        role: 'user',
-        parts: [
-          { text: prompt },
-          {
-            inlineData: {
-              data: imageBuffer.toString('base64'),
-              mimeType,
-            },
-          },
-        ],
-      },
-    ],
-    config: {
-      temperature: 0.0,
-      maxOutputTokens: 24,
-    },
-  }, 1, 4000);
-
-  const text = response.text?.trim() || 'Stop. Path not verified.';
+  const text = await requestWalkingSafetyText(imageBuffer, mimeType, prompt);
   const safety = normalizeWalkingSafety(text);
   const safeText = safety.status === 'unknown' ? 'Stop. Path not verified.' : text;
   return {

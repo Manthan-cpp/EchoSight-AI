@@ -266,7 +266,7 @@ export function createEchoSightServer(): McpServer {
     }
   );
 
-  // Tool 8: check_walking_path (Instant sub-second collision radar)
+  // Tool 8: check_walking_path (Low-latency cancellable collision radar)
   server.tool(
     'check_walking_path',
     'Instant ultra-low-latency walking safety and collision avoidance check. Answers in under 6 words whether it is safe to step forward right now.',

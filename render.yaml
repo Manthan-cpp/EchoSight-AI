@@ -12,7 +12,7 @@ services:
       - key: PORT
         value: 10000
       - key: GEMINI_MODEL
-        value: gemini-3.7-flash
+        value: gemini-3.5-flash-lite
       - key: GEMINI_API_KEY
         sync: false
       - key: GEMINI_API_KEY1

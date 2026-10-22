@@ -25,7 +25,10 @@ export async function callTool(
   args: Record<string, any>,
   options: CallToolOptions = {}
 ): Promise<ToolResult> {
-  const timeoutMs = options.timeoutMs ?? (toolName === 'check_walking_path' ? 4500 : 20000);
+  // The walking fast path may rotate across keys inside the server. Give it
+  // enough room to finish a fallback attempt without turning a valid slow
+  // Gemini response into a false "path not verified" result.
+  const timeoutMs = options.timeoutMs ?? (toolName === 'check_walking_path' ? 13000 : 20000);
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
 
